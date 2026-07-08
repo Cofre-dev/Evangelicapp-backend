@@ -88,12 +88,7 @@ export class AuthService {
 
     const stored = await this.prisma.refreshToken.findUnique({ where: { tokenHash } });
 
-    if (
-      !stored ||
-      stored.revoked ||
-      stored.usuarioId !== payload.sub ||
-      stored.expiresAt < new Date()
-    ) {
+    if (!stored || stored.revoked || stored.usuarioId !== payload.sub || stored.expiresAt < new Date()) {
       throw new UnauthorizedException('Refresh token inválido o expirado');
     }
 
@@ -179,7 +174,7 @@ export class AuthService {
       }),
     ]);
 
-    const decoded = this.jwtService.decode(refreshToken) as { exp: number };
+    const decoded = this.jwtService.decode<{ exp: number }>(refreshToken);
 
     await this.prisma.refreshToken.create({
       data: {

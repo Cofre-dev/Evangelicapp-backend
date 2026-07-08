@@ -11,8 +11,8 @@ export function translateUniqueConstraintError(error: unknown): unknown {
     return error;
   }
 
-  const target = error.meta?.target;
-  const targetStr = Array.isArray(target) ? target.join(',') : String(target ?? '');
+  const target = error.meta?.target as string[] | string | undefined;
+  const targetStr = Array.isArray(target) ? target.join(',') : (target ?? '');
 
   if (targetStr.includes('username')) {
     return new ConflictException('Ese nombre de usuario ya está en uso');

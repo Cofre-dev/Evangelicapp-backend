@@ -22,7 +22,11 @@ const MAX_LOGO_SIZE_BYTES = 2 * 1024 * 1024;
 export const logoMulterOptions = {
   storage: diskStorage({
     destination: LOGOS_DIR,
-    filename: (_req: Request, file: Express.Multer.File, callback: (error: Error | null, filename: string) => void) => {
+    filename: (
+      _req: Request,
+      file: Express.Multer.File,
+      callback: (error: Error | null, filename: string) => void,
+    ) => {
       callback(null, `${randomUUID()}${extname(file.originalname).toLowerCase()}`);
     },
   }),
