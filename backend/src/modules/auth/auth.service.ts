@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Usuario } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash } from 'crypto';
+import { generateCsrfToken } from '../../common/utils/generate-csrf-token';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -17,6 +18,8 @@ export type SafeUsuario = Omit<Usuario, 'password'> & {
 export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
+  /** Token double-submit para CSRF; viaja en una cookie legible por JS, no en el body. */
+  csrfToken: string;
 }
 
 export interface LoginResponse extends AuthTokens {
@@ -88,7 +91,32 @@ export class AuthService {
 
     const stored = await this.prisma.refreshToken.findUnique({ where: { tokenHash } });
 
-    if (!stored || stored.revoked || stored.usuarioId !== payload.sub || stored.expiresAt < new Date()) {
+    if (!stored || stored.usuarioId !== payload.sub || stored.expiresAt < new Date()) {
+      throw new UnauthorizedException('Refresh token inválido o expirado');
+    }
+
+    if (stored.revoked) {
+      // Reuso de un refresh token que ya fue rotado: puede ser un robo (alguien
+      // reproduciendo un token viejo) o dos tabs refrescando casi al mismo tiempo
+      // — no hay forma de distinguirlos acá. Ante la duda, se cierra la sesión
+      // en todos los dispositivos y se obliga a loguear de nuevo.
+      await this.prisma.refreshToken.updateMany({
+        where: { usuarioId: stored.usuarioId, revoked: false },
+        data: { revoked: true },
+      });
+      throw new UnauthorizedException('Refresh token inválido o expirado');
+    }
+
+    // Update atómico y condicional: si dos requests llegan con el mismo token
+    // casi al mismo tiempo, solo una gana la carrera (count === 1) y rota el
+    // token; la otra ve count === 0 y recibe un 401 simple, sin gatillar la
+    // detección de reuso de arriba (que es para un token YA rotado antes).
+    const rotated = await this.prisma.refreshToken.updateMany({
+      where: { id: stored.id, revoked: false },
+      data: { revoked: true },
+    });
+
+    if (rotated.count === 0) {
       throw new UnauthorizedException('Refresh token inválido o expirado');
     }
 
@@ -96,12 +124,6 @@ export class AuthService {
     if (!usuario || !usuario.activo) {
       throw new UnauthorizedException('Usuario inválido o inactivo');
     }
-
-    // Rotación: el refresh token usado queda inservible aunque no haya expirado.
-    await this.prisma.refreshToken.update({
-      where: { id: stored.id },
-      data: { revoked: true },
-    });
 
     return this.issueTokens(usuario);
   }
@@ -184,7 +206,7 @@ export class AuthService {
       },
     });
 
-    return { accessToken, refreshToken };
+    return { accessToken, refreshToken, csrfToken: generateCsrfToken() };
   }
 
   private hashToken(token: string): string {

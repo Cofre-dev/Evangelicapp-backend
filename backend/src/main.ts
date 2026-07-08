@@ -1,11 +1,15 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import cookieParser from 'cookie-parser';
 import { join } from 'path';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Necesario para que req.cookies exista (lo leen JwtStrategy, JwtRefreshStrategy y CsrfMiddleware).
+  app.use(cookieParser());
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -15,8 +19,16 @@ async function bootstrap() {
     }),
   );
 
+  // Las cookies exigen credentials:true en el fetch del frontend, lo que a su vez
+  // prohíbe origin:"*" en CORS. CORS_ORIGIN admite varios orígenes separados por coma
+  // (ej. dev + prod) — ver .env.example.
+  const corsOrigins = (process.env.CORS_ORIGIN ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
   app.enableCors({
-    origin: process.env.CORS_ORIGIN,
+    origin: corsOrigins,
     credentials: true,
   });
 

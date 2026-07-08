@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { CsrfMiddleware } from './common/middleware/csrf.middleware';
 import { AgendaModule } from './modules/agenda/agenda.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { FinanzasModule } from './modules/finanzas/finanzas.module';
@@ -24,4 +25,17 @@ import { PrismaModule } from './prisma/prisma.module';
     NotasModule,
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer
+      .apply(CsrfMiddleware)
+      .exclude(
+        // Login: todavía no hay sesión/cookie que proteger.
+        { path: 'auth/login', method: RequestMethod.POST },
+        // Confirmación pública de predicadores: el token de un solo uso es la propia
+        // autenticación; no depende de cookies de sesión (ver PredicadoresController).
+        { path: 'agenda/predicadores/:token/responder', method: RequestMethod.POST },
+      )
+      .forRoutes('*');
+  }
+}
