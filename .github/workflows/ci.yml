@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      DATABASE_URL: mysql://user:password@localhost:3306/evangelicapp
+      DATABASE_URL: postgresql://user:password@localhost:5432/evangelicapp
       JWT_ACCESS_SECRET: ci-access-secret
       JWT_REFRESH_SECRET: ci-refresh-secret
 

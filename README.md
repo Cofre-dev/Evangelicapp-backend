@@ -12,7 +12,7 @@ Este repositorio contiene **solo el backend**. El frontend vive en un repositori
 |---|---|
 | Framework | [NestJS](https://nestjs.com/) 10 (Express) |
 | Lenguaje | TypeScript 5 |
-| Base de datos | MySQL |
+| Base de datos | PostgreSQL |
 | ORM | [Prisma](https://www.prisma.io/) 5 |
 | Auth | JWT (access + refresh con rotación), Passport (`passport-local`, `passport-jwt`) |
 | Validación | `class-validator` / `class-transformer` |
@@ -80,7 +80,7 @@ Autorización vía `JwtAuthGuard` + `RolesGuard` + `@Roles(...)` aplicados por c
 ## Requisitos
 
 - Node.js 20 LTS
-- MySQL 8+ (local o contenedor)
+- PostgreSQL 14+ (local o contenedor)
 - npm
 
 ## Puesta en marcha
@@ -103,7 +103,7 @@ Ver `backend/.env.example`. Resumen:
 
 | Variable | Uso |
 |---|---|
-| `DATABASE_URL` | Connection string de MySQL para Prisma |
+| `DATABASE_URL` | Connection string de PostgreSQL para Prisma |
 | `PORT` | Puerto HTTP (default 3001) |
 | `CORS_ORIGIN` | Uno o varios orígenes del frontend, separados por coma (ej. `http://localhost:3000,https://app.evangelicapp.cl`) |
 | `NODE_ENV` | En `production` las cookies de auth se marcan `Secure` (solo viajan por HTTPS) |
@@ -179,7 +179,7 @@ Jest + ts-jest, specs colocados junto al código como `*.spec.ts` (convención d
 ## Pendientes conocidos
 
 - Sin tests de integración/e2e (solo unitarios de utilidades puras y del middleware CSRF por ahora).
-- Sin `Dockerfile`/`docker-compose` para levantar MySQL local reproducible.
+- Sin `Dockerfile`/`docker-compose` para levantar PostgreSQL local reproducible.
 - Rol `MIEMBRO` está definido en el schema pero sin endpoints propios todavía.
 - Storage de logos es local (`uploads/`) — migrar a un bucket (S3/GCS/etc.) antes de desplegar a un entorno con múltiples instancias o disco efímero.
 - `JwtStrategy` todavía acepta `Authorization: Bearer` como fallback además de la cookie — retirarlo una vez confirmado que el frontend migró por completo (ver [`docs/auth-cookies.md`](./docs/auth-cookies.md)).
