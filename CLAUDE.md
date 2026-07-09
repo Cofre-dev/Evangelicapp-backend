@@ -1,6 +1,10 @@
 # EvangelicApp — Contexto de producto y negocio
 
-Este archivo lo lee Claude automáticamente al iniciar cualquier sesión en este repositorio. Contiene el **por qué** del proyecto (negocio/producto). Para el **cómo** técnico (stack, arquitectura, setup), ver [`README.md`](./README.md).
+Este archivo lo lee Claude automáticamente al iniciar cualquier sesión en este repositorio. Contiene el **por qué** del proyecto (negocio/producto). Para el **cómo** técnico (stack, arquitectura, setup), ver [`README.md`](./README.md). Para el historial de cambios, ver [`FEATURES.md`](./FEATURES.md).
+
+## Bitácora obligatoria
+
+Cada vez que Claude haga una modificación en este repositorio (código, config, docs), debe agregar una entrada nueva al final de `FEATURES.md` con fecha y hora, los cambios realizados y para qué sirven. Es un archivo de solo agregar: nunca borrar ni reescribir entradas anteriores. Esto aplica dentro de la misma sesión también — si se hacen varios cambios de una sesión, se puede agrupar en una sola entrada al terminar, pero no se debe cerrar una tarea de modificación sin dejarla registrada.
 
 ## Qué es
 

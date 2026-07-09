@@ -4,7 +4,7 @@ API REST para EvangelicApp, plataforma de gestión para iglesias evangélicas de
 
 Este repositorio contiene **solo el backend**. El frontend vive en un repositorio separado a propósito (no es un monorepo).
 
-> Para el contexto de negocio (qué problema resuelve, quién lo usa, cómo se monetiza, roadmap) ver [`CLAUDE.md`](./CLAUDE.md). Este documento es la referencia técnica.
+> Para el contexto de negocio (qué problema resuelve, quién lo usa, cómo se monetiza, roadmap) ver [`CLAUDE.md`](./CLAUDE.md). Para el historial de cambios ver [`FEATURES.md`](./FEATURES.md). Este documento es la referencia técnica.
 
 ## Stack
 
@@ -38,8 +38,10 @@ Al agregar un modelo/endpoint nuevo, seguir el mismo patrón: `iglesiaId` desde 
 
 - Login por **username** (no email — el email es solo dato de contacto/recuperación).
 - Access token (15 min, configurable) + refresh token (7 días, configurable), ambos JWT firmados con secretos distintos.
-- Los refresh tokens se guardan hasheados (SHA-256) en la tabla `refresh_tokens`, con rotación: al usarse uno queda `revoked`. Permite logout real y revocar sesiones (ej. al cambiar contraseña).
-- `JwtStrategy` revalida `usuario.activo` contra la base de datos en **cada** request — desactivar a un usuario corta su acceso de inmediato, no cuando expire el token.
+- **Los tokens viajan en cookies `httpOnly`, nunca en el body de la respuesta ni en `localStorage`** — así un XSS en el frontend no puede robarlos vía JavaScript. Detalle completo (nombres de cookie, atributos, CSRF, CORS) en [`docs/auth-cookies.md`](./docs/auth-cookies.md).
+- Los refresh tokens se guardan hasheados (SHA-256) en la tabla `refresh_tokens`, con **rotación atómica**: al usarse uno queda `revoked` vía un `updateMany` condicional (evita doble-emisión si dos requests llegan casi al mismo tiempo). Reusar un refresh token ya rotado se trata como posible robo: revoca **todas** las sesiones activas del usuario y fuerza re-login.
+- `JwtStrategy` revalida `usuario.activo` contra la base de datos en **cada** request — desactivar a un usuario corta su acceso de inmediato, no cuando expire el token. Acepta el access token desde la cookie o (transición) desde `Authorization: Bearer`.
+- CSRF: patrón double-submit cookie vía `CsrfMiddleware` — toda request mutante (POST/PUT/PATCH/DELETE) que traiga una cookie de sesión debe reflejar su valor en el header `X-CSRF-Token`.
 - `mustChangePassword` y `onboardingCompletado` en `Usuario` gatillan pantallas obligatorias en el frontend antes de dejar usar el resto de la app (ver `LoginResponse` en `auth.service.ts`).
 
 ### Roles y permisos
@@ -103,9 +105,10 @@ Ver `backend/.env.example`. Resumen:
 |---|---|
 | `DATABASE_URL` | Connection string de MySQL para Prisma |
 | `PORT` | Puerto HTTP (default 3001) |
-| `CORS_ORIGIN` | Origen permitido para CORS (el frontend) |
-| `JWT_ACCESS_SECRET` / `JWT_ACCESS_EXPIRATION` | Firma y expiración del access token |
-| `JWT_REFRESH_SECRET` / `JWT_REFRESH_EXPIRATION` | Firma y expiración del refresh token |
+| `CORS_ORIGIN` | Uno o varios orígenes del frontend, separados por coma (ej. `http://localhost:3000,https://app.evangelicapp.cl`) |
+| `NODE_ENV` | En `production` las cookies de auth se marcan `Secure` (solo viajan por HTTPS) |
+| `JWT_ACCESS_SECRET` / `JWT_ACCESS_EXPIRATION` | Firma y expiración del access token (y de su cookie) |
+| `JWT_REFRESH_SECRET` / `JWT_REFRESH_EXPIRATION` | Firma y expiración del refresh token (y de su cookie) |
 | `FRONTEND_URL` | Usado para construir el link de confirmación de predicadores en el email |
 | `SMTP_HOST` / `SMTP_PORT` / `MAIL_FROM` | Configuración del transporte de Nodemailer |
 
@@ -175,7 +178,8 @@ Jest + ts-jest, specs colocados junto al código como `*.spec.ts` (convención d
 
 ## Pendientes conocidos
 
-- Sin tests de integración/e2e (solo unitarios de utilidades puras por ahora).
+- Sin tests de integración/e2e (solo unitarios de utilidades puras y del middleware CSRF por ahora).
 - Sin `Dockerfile`/`docker-compose` para levantar MySQL local reproducible.
 - Rol `MIEMBRO` está definido en el schema pero sin endpoints propios todavía.
 - Storage de logos es local (`uploads/`) — migrar a un bucket (S3/GCS/etc.) antes de desplegar a un entorno con múltiples instancias o disco efímero.
+- `JwtStrategy` todavía acepta `Authorization: Bearer` como fallback además de la cookie — retirarlo una vez confirmado que el frontend migró por completo (ver [`docs/auth-cookies.md`](./docs/auth-cookies.md)).

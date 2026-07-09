@@ -3,7 +3,6 @@ import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { diskStorage, type FileFilterCallback } from 'multer';
 import { extname, join } from 'path';
-import type { Request } from 'express';
 
 export const LOGOS_DIR = join(process.cwd(), 'uploads', 'logos');
 
@@ -22,15 +21,11 @@ const MAX_LOGO_SIZE_BYTES = 2 * 1024 * 1024;
 export const logoMulterOptions = {
   storage: diskStorage({
     destination: LOGOS_DIR,
-    filename: (
-      _req: Request,
-      file: Express.Multer.File,
-      callback: (error: Error | null, filename: string) => void,
-    ) => {
+    filename: (_req, file, callback) => {
       callback(null, `${randomUUID()}${extname(file.originalname).toLowerCase()}`);
     },
   }),
-  fileFilter: (_req: Request, file: Express.Multer.File, callback: FileFilterCallback) => {
+  fileFilter: (_req, file: Express.Multer.File, callback: FileFilterCallback) => {
     if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
       callback(new BadRequestException('El logo debe ser PNG, JPG o WEBP'));
       return;
