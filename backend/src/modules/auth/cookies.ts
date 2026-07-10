@@ -22,13 +22,17 @@ function isProduction(config: ConfigService): boolean {
  */
 export function setAuthCookies(res: Response, config: ConfigService, payload: AuthCookiePayload): void {
   const secure = isProduction(config);
+  // Frontend y backend viven en dominios distintos (ej. Vercel + Render), lo que hace la
+  // request cross-site: SameSite=Lax no viaja en fetch/XHR cross-site, así que en producción
+  // se necesita 'none' (que a su vez exige Secure, ya cubierto por `secure` en producción).
+  const sameSite = secure ? 'none' : 'lax';
   const accessMaxAge = ms(config.get<string>('JWT_ACCESS_EXPIRATION', '15m') as ms.StringValue);
   const refreshMaxAge = ms(config.get<string>('JWT_REFRESH_EXPIRATION', '7d') as ms.StringValue);
 
   res.cookie(ACCESS_TOKEN_COOKIE, payload.accessToken, {
     httpOnly: true,
     secure,
-    sameSite: 'lax',
+    sameSite,
     path: '/',
     maxAge: accessMaxAge,
   });
@@ -36,7 +40,7 @@ export function setAuthCookies(res: Response, config: ConfigService, payload: Au
   res.cookie(REFRESH_TOKEN_COOKIE, payload.refreshToken, {
     httpOnly: true,
     secure,
-    sameSite: 'lax',
+    sameSite,
     path: '/auth/refresh',
     maxAge: refreshMaxAge,
   });
@@ -44,7 +48,7 @@ export function setAuthCookies(res: Response, config: ConfigService, payload: Au
   res.cookie(CSRF_COOKIE, payload.csrfToken, {
     httpOnly: false,
     secure,
-    sameSite: 'lax',
+    sameSite,
     path: '/',
     maxAge: refreshMaxAge,
   });
@@ -53,13 +57,14 @@ export function setAuthCookies(res: Response, config: ConfigService, payload: Au
 /** Los atributos (path, sameSite, secure) deben calzar exactos con los de setAuthCookies para que el navegador borre las cookies correctas. */
 export function clearAuthCookies(res: Response, config: ConfigService): void {
   const secure = isProduction(config);
+  const sameSite = secure ? 'none' : 'lax';
 
-  res.clearCookie(ACCESS_TOKEN_COOKIE, { httpOnly: true, secure, sameSite: 'lax', path: '/' });
+  res.clearCookie(ACCESS_TOKEN_COOKIE, { httpOnly: true, secure, sameSite, path: '/' });
   res.clearCookie(REFRESH_TOKEN_COOKIE, {
     httpOnly: true,
     secure,
-    sameSite: 'lax',
+    sameSite,
     path: '/auth/refresh',
   });
-  res.clearCookie(CSRF_COOKIE, { httpOnly: false, secure, sameSite: 'lax', path: '/' });
+  res.clearCookie(CSRF_COOKIE, { httpOnly: false, secure, sameSite, path: '/' });
 }

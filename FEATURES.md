@@ -56,3 +56,9 @@ Formato de cada entrada:
 - Se corrió `prisma db seed` contra la DB de Render: quedó con un usuario SUPER_ADMIN (`admin` / `SuperAdmin123`) y 3 iglesias demo con sus pastores (credenciales en `prisma/seed.ts`) para que el equipo pueda probar la app de inmediato.
 
 **Funcionalidad:** el fundador pidió deployar en Render solo para pruebas con usuarios reales (no es la versión final). Render no ofrece MySQL gestionado nativo, solo Postgres, así que en vez de depender de un proveedor externo de MySQL se migró el proyecto completo a Postgres usando la base gestionada del propio Render. Nota para más adelante: las credenciales del seed son de prueba pública y deben rotarse (o el seed no debe correrse) antes de cualquier uso con datos reales de una iglesia.
+
+## [2026-07-10 01:30] Fix: cookies de sesión no persistían en deploy cross-site (Vercel + Render)
+
+**Cambios:** `backend/src/modules/auth/cookies.ts` — el atributo `sameSite` de las cookies de auth (access token, refresh token, csrf token) pasó de estar fijo en `'lax'` a ser condicional: `'none'` cuando `NODE_ENV=production` (igual condición que ya se usaba para `secure`), `'lax'` en desarrollo.
+
+**Funcionalidad:** con el frontend en Vercel y el backend en Render (dominios distintos), el login dejaba las cookies seteadas pero el navegador no las reenviaba en la siguiente request autenticada — `SameSite=Lax` no viaja en fetch/XHR cross-site, así que la app trataba al usuario como no autenticado y lo devolvía al login apenas intentaba usar cualquier funcionalidad. `SameSite=None` es el valor correcto para este escenario cross-site, y solo es válido junto con `Secure` (ya cubierto, porque ambos dependen de la misma condición de producción). En desarrollo local (mismo `site`, solo puertos distintos) `Lax` sigue siendo válido y más restrictivo, así que se mantiene ahí.
