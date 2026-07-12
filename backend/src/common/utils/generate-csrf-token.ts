@@ -1,6 +1,6 @@
-import { randomBytes } from 'crypto';
+import { generateSecureToken } from './generate-secure-token';
 
 /** Token opaco para el patrón double-submit cookie (no es un JWT, no lleva información). */
 export function generateCsrfToken(): string {
-  return randomBytes(32).toString('hex');
+  return generateSecureToken();
 }

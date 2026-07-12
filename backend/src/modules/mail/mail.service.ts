@@ -10,6 +10,21 @@ interface InvitacionPredicadorParams {
   tokenConfirmacion: string;
 }
 
+/**
+ * `nombreIglesia`/`tituloEvento` los controla cualquier PASTOR/TESORERO/SECRETARIA
+ * (ej. `CreateEventoDto.titulo` solo exige @IsString @IsNotEmpty) y este HTML sale
+ * a una casilla externa real — sin escapar, un título malicioso podría inyectar
+ * markup/enlaces en el correo del predicador invitado.
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
@@ -32,6 +47,8 @@ export class MailService {
       month: 'long',
       year: 'numeric',
     });
+    const nombreIglesia = escapeHtml(params.nombreIglesia);
+    const tituloEvento = escapeHtml(params.tituloEvento);
 
     try {
       await this.transporter.sendMail({
@@ -40,8 +57,8 @@ export class MailService {
         subject: `Invitación a predicar — ${params.nombreIglesia}`,
         html: `
           <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
-            <h2 style="color: #0369a1;">${params.nombreIglesia}</h2>
-            <p>Has sido invitado a predicar en <strong>${params.tituloEvento}</strong>.</p>
+            <h2 style="color: #0369a1;">${nombreIglesia}</h2>
+            <p>Has sido invitado a predicar en <strong>${tituloEvento}</strong>.</p>
             <p>Fecha: ${fechaTexto}</p>
             <p style="margin-top: 24px;">
               <a href="${link}" style="background:#38bdf8;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">

@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { EstadoConfirmacionPredicador } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
@@ -46,6 +47,12 @@ export class PredicadoresService {
 
     if (!predicador) {
       throw new NotFoundException('Invitación no encontrada');
+    }
+
+    // El link es de un solo uso: sin esto, cualquiera con el link podría alternar
+    // CONFIRMADO/RECHAZADO indefinidamente después de la primera respuesta.
+    if (predicador.estado !== EstadoConfirmacionPredicador.PENDIENTE) {
+      throw new BadRequestException('Esta invitación ya fue respondida');
     }
 
     await this.prisma.predicador.update({

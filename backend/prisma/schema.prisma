@@ -181,7 +181,10 @@ model Predicador {
   id                String                       @id @default(cuid())
   nombre            String?
   email             String
-  tokenConfirmacion String                       @unique @default(cuid())
+  /// Generado en código con un CSPRNG (ver generateSecureToken en eventos.service.ts) —
+  /// cuid() no es apto para esto: prioriza unicidad/orden, no impredecibilidad, y este
+  /// valor es el único factor de autenticación de la ruta pública de confirmación.
+  tokenConfirmacion String                       @unique
   estado            EstadoConfirmacionPredicador @default(PENDIENTE)
   respondidoAt      DateTime?
   createdAt         DateTime                     @default(now())

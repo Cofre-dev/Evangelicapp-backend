@@ -1,12 +1,11 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Rol } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
 import { generateTemporaryPassword } from '../../common/utils/generate-temporary-password';
 import { translateUniqueConstraintError } from '../../common/utils/translate-unique-constraint-error';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateIglesiaDto } from './dto/create-iglesia.dto';
-
-const BCRYPT_ROUNDS = 10;
 
 @Injectable()
 export class IglesiasService {

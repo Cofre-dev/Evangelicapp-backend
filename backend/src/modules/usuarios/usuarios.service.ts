@@ -1,13 +1,12 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, Rol } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
 import { generateTemporaryPassword } from '../../common/utils/generate-temporary-password';
 import { translateUniqueConstraintError } from '../../common/utils/translate-unique-constraint-error';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateUsuarioDto } from './dto/create-usuario.dto';
 import { UpdateUsuarioDto } from './dto/update-usuario.dto';
-
-const BCRYPT_ROUNDS = 10;
 
 const USUARIO_SELECT = {
   id: true,

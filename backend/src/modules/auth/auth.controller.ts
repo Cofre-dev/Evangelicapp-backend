@@ -24,7 +24,15 @@ import { JwtRefreshGuard } from './guards/jwt-refresh.guard';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtRefreshPayload } from './strategies/jwt-refresh.strategy';
 
-type LoginResponseBody = Omit<LoginResponse, 'accessToken' | 'refreshToken' | 'csrfToken'>;
+/**
+ * accessToken/refreshToken van solo en cookies httpOnly. csrfToken SÍ va en el
+ * body: en el deploy real (frontend y backend en dominios distintos) una
+ * cookie no-httpOnly seteada por el backend no es legible vía document.cookie
+ * desde el origen del frontend (restricción de scoping por dominio, no de
+ * httpOnly/sameSite) — el body es el único canal por el que el frontend puede
+ * obtener el valor para reflejarlo en el header X-CSRF-Token.
+ */
+type LoginResponseBody = Omit<LoginResponse, 'accessToken' | 'refreshToken'>;
 
 @Controller('auth')
 export class AuthController {
@@ -36,8 +44,9 @@ export class AuthController {
   /**
    * Login único para todos los roles, incluido el primer ingreso del pastor
    * con la contraseña temporal generada por el SuperAdmin. El body se valida
-   * con LoginDto; las credenciales en sí las verifica LocalStrategy. Los
-   * tokens nunca viajan en el body: van en cookies httpOnly (ver ./cookies.ts).
+   * con LoginDto; las credenciales en sí las verifica LocalStrategy. accessToken/
+   * refreshToken nunca viajan en el body: van en cookies httpOnly (ver ./cookies.ts).
+   * csrfToken sí viaja en el body (ver comentario de LoginResponseBody más arriba).
    */
   @Post('login')
   @HttpCode(HttpStatus.OK)
@@ -47,11 +56,9 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<LoginResponseBody> {
-    const { accessToken, refreshToken, csrfToken, ...body } = await this.authService.login(
-      req.user as Usuario,
-    );
+    const { accessToken, refreshToken, ...body } = await this.authService.login(req.user as Usuario);
 
-    setAuthCookies(res, this.config, { accessToken, refreshToken, csrfToken });
+    setAuthCookies(res, this.config, { accessToken, refreshToken, csrfToken: body.csrfToken });
 
     return body;
   }
@@ -60,14 +67,17 @@ export class AuthController {
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtRefreshGuard)
-  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<{ ok: true }> {
+  async refresh(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ ok: true; csrfToken: string }> {
     const { accessToken, refreshToken, csrfToken } = await this.authService.refreshTokens(
       req.user as JwtRefreshPayload,
     );
 
     setAuthCookies(res, this.config, { accessToken, refreshToken, csrfToken });
 
-    return { ok: true };
+    return { ok: true, csrfToken };
   }
 
   @Post('logout')

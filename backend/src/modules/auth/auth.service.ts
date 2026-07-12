@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Usuario } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash } from 'crypto';
+import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
 import { generateCsrfToken } from '../../common/utils/generate-csrf-token';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -27,8 +28,6 @@ export interface LoginResponse extends AuthTokens {
   requiresPasswordChange: boolean;
   requiresOnboarding: boolean;
 }
-
-const BCRYPT_ROUNDS = 10;
 
 @Injectable()
 export class AuthService {

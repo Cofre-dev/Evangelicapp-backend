@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { TipoEvento } from '@prisma/client';
+import { generateSecureToken } from '../../common/utils/generate-secure-token';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateEventoDto } from './dto/create-evento.dto';
@@ -123,7 +124,12 @@ export class EventosService {
 
     for (const invitado of predicadores) {
       const predicador = await this.prisma.predicador.create({
-        data: { eventoId: evento.id, email: invitado.email, nombre: invitado.nombre },
+        data: {
+          eventoId: evento.id,
+          email: invitado.email,
+          nombre: invitado.nombre,
+          tokenConfirmacion: generateSecureToken(),
+        },
       });
 
       await this.mailService.enviarInvitacionPredicador({
