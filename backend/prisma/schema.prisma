@@ -85,12 +85,16 @@ model Iglesia {
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
 
+  /// Regenerable por el pastor para invalidar un QR impreso (ej. si se filtró) sin tocar el id real del tenant.
+  integrantesQrToken String?      @unique @default(cuid())
+
   usuarios              Usuario[]
   eventos               Evento[]
   categoriasFinancieras CategoriaFinanciera[]
   movimientos           MovimientoFinanciero[]
   auditoriasFinancieras MovimientoAuditLog[]
   notas                 Nota[]
+  integrantes           Integrante[]
 
   @@map("iglesias")
 }
@@ -291,4 +295,37 @@ model Nota {
 
   @@index([iglesiaId, fechaLimite])
   @@map("notas")
+}
+
+// ==========================================================================
+// MÓDULO 4 — INTEGRANTES (censo por QR)
+// ==========================================================================
+
+/// Censo de congregantes vía QR público de la iglesia. Deduplicado por
+/// (iglesiaId, email) o (iglesiaId, run): un re-escaneo con un dato ya
+/// registrado NO sobrescribe la fila existente (ver IntegrantesService#registrar).
+model Integrante {
+  id             String   @id @default(cuid())
+  nombreCompleto String
+  email          String
+  telefono       String
+  fotoUrl        String?
+  /// RUN chileno (NNNNNNNN-D), segunda clave de deduplicación además del email.
+  /// Nullable a nivel de columna: filas creadas antes de este campo no tienen valor;
+  /// toda fila nueva SIEMPRE lo trae porque el DTO lo exige.
+  run            String?
+  /// Elegida por la propia persona en el formulario, no derivada de createdAt
+  /// (puede llevar años en la congregación y recién ahora completar el censo).
+  /// Nullable por la misma razón que run: filas viejas no lo tienen.
+  miembroDesde   DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  iglesiaId String
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  @@unique([iglesiaId, email])
+  @@unique([iglesiaId, run])
+  @@index([iglesiaId])
+  @@map("integrantes")
 }

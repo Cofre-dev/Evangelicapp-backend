@@ -1,10 +1,12 @@
-import { IsDateString, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsDateString, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { MedioPago } from '@prisma/client';
 
 export class UpdateMovimientoDto {
+  /** Tope real de la columna `monto` (Decimal(12,2) en el schema): hasta 10 dígitos enteros. */
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
+  @Max(9999999999.99)
   monto?: number;
 
   @IsOptional()

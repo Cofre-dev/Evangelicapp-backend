@@ -35,6 +35,6 @@ async function bootstrap() {
   // Storage local de logos (uploads/logos) mientras no haya un bucket configurado.
   app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });
 
-  await app.listen(process.env.PORT ?? 3001);
+  await app.listen(process.env.PORT ?? 3000);
 }
 void bootstrap();
