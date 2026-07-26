@@ -3,7 +3,7 @@ import { AccionAuditoria, MedioPago, Prisma, TipoMovimiento } from '@prisma/clie
 import * as ExcelJS from 'exceljs';
 import { AuthService } from '../auth/auth.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { ConfirmPasswordDto } from './dto/confirm-password.dto';
+import { ConfirmPasswordDto } from '../../common/dto/confirm-password.dto';
 import { CreateMovimientoDto } from './dto/create-movimiento.dto';
 import { UpdateMovimientoDto } from './dto/update-movimiento.dto';
 

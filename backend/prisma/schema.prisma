@@ -95,6 +95,10 @@ model Iglesia {
   auditoriasFinancieras MovimientoAuditLog[]
   notas                 Nota[]
   integrantes           Integrante[]
+  matrimonios           Matrimonio[]
+  bautizos              Bautizo[]
+  defunciones           Defuncion[]
+  presentaciones        Presentacion[]
 
   @@map("iglesias")
 }
@@ -131,6 +135,10 @@ model Usuario {
   notasCreadas       Nota[]                  @relation("NotaCreadaPor")
   notasAsignadas     Nota[]                  @relation("NotaAsignadaA")
   refreshTokens      RefreshToken[]
+  matrimoniosCreados    Matrimonio[]   @relation("MatrimonioCreadoPor")
+  bautizosCreados       Bautizo[]      @relation("BautizoCreadoPor")
+  defuncionesCreadas    Defuncion[]    @relation("DefuncionCreadoPor")
+  presentacionesCreadas Presentacion[] @relation("PresentacionCreadoPor")
 
   @@index([iglesiaId])
   @@map("usuarios")
@@ -328,4 +336,99 @@ model Integrante {
   @@unique([iglesiaId, run])
   @@index([iglesiaId])
   @@map("integrantes")
+}
+
+// ==========================================================================
+// MÓDULO 5 — CEREMONIAS (registro de matrimonios, bautizos, defunciones y
+// presentaciones — reemplaza el libro físico de la iglesia)
+// ==========================================================================
+
+/// `folio` es el correlativo por iglesia (no global) que identifica la partida del
+/// "libro" — se asigna una sola vez al crear el registro (ver MatrimoniosService#create).
+/// La fecha de emisión que va impresa en el certificado NO se persiste: se calcula como
+/// "hoy" cada vez que se genera el PDF (una reimpresión trae la fecha en que se reimprime).
+model Matrimonio {
+  id           String   @id @default(cuid())
+  folio        Int
+  fecha        DateTime
+  nombreNovio  String
+  nombreNovia  String
+  nombrePastor String
+  ciudad       String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  iglesiaId String
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  creadoPorId String?
+  creadoPor   Usuario? @relation("MatrimonioCreadoPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
+
+  @@unique([iglesiaId, folio])
+  @@index([iglesiaId, fecha])
+  @@map("matrimonios")
+}
+
+model Bautizo {
+  id            String   @id @default(cuid())
+  folio         Int
+  fecha         DateTime
+  nombrePersona String
+  nombrePastor  String
+  ciudad        String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  iglesiaId String
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  creadoPorId String?
+  creadoPor   Usuario? @relation("BautizoCreadoPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
+
+  @@unique([iglesiaId, folio])
+  @@index([iglesiaId, fecha])
+  @@map("bautizos")
+}
+
+model Defuncion {
+  id            String   @id @default(cuid())
+  folio         Int
+  fecha         DateTime
+  nombreDifunto String
+  nombrePastor  String
+  ciudad        String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  iglesiaId String
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  creadoPorId String?
+  creadoPor   Usuario? @relation("DefuncionCreadoPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
+
+  @@unique([iglesiaId, folio])
+  @@index([iglesiaId, fecha])
+  @@map("defunciones")
+}
+
+model Presentacion {
+  id           String   @id @default(cuid())
+  folio        Int
+  fecha        DateTime
+  nombreNino   String
+  nombrePadres String
+  nombrePastor String
+  ciudad       String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  iglesiaId String
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  creadoPorId String?
+  creadoPor   Usuario? @relation("PresentacionCreadoPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
+
+  @@unique([iglesiaId, folio])
+  @@index([iglesiaId, fecha])
+  @@map("presentaciones")
 }

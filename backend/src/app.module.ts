@@ -4,6 +4,7 @@ import { CsrfMiddleware } from './common/middleware/csrf.middleware';
 import { RefreshOriginMiddleware } from './common/middleware/refresh-origin.middleware';
 import { AgendaModule } from './modules/agenda/agenda.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { CeremoniasModule } from './modules/ceremonias/ceremonias.module';
 import { FinanzasModule } from './modules/finanzas/finanzas.module';
 import { IglesiasModule } from './modules/iglesias/iglesias.module';
 import { IntegrantesModule } from './modules/integrantes/integrantes.module';
@@ -26,6 +27,7 @@ import { PrismaModule } from './prisma/prisma.module';
     FinanzasModule,
     NotasModule,
     IntegrantesModule,
+    CeremoniasModule,
   ],
 })
 export class AppModule implements NestModule {
