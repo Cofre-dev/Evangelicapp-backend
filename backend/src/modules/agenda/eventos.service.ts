@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { TipoEvento } from '@prisma/client';
 import { generateSecureToken } from '../../common/utils/generate-secure-token';
 import { MailService } from '../mail/mail.service';
@@ -8,6 +8,8 @@ import { UpdateEventoDto } from './dto/update-evento.dto';
 
 @Injectable()
 export class EventosService {
+  private readonly logger = new Logger(EventosService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
@@ -53,6 +55,7 @@ export class EventosService {
         fechaFin,
         ubicacion: dto.ubicacion,
         colorEtiqueta: dto.colorEtiqueta,
+        notificarIntegrantes: dto.notificarIntegrantes ?? false,
         iglesiaId,
         creadoPorId: usuarioId,
       },
@@ -60,6 +63,10 @@ export class EventosService {
 
     if (dto.tipo === TipoEvento.CULTO && dto.predicadores?.length) {
       await this.invitarPredicadores(iglesiaId, evento, dto.predicadores);
+    }
+
+    if (dto.notificarIntegrantes) {
+      await this.notificarIntegrantes(iglesiaId, evento, usuarioId);
     }
 
     return this.findOne(iglesiaId, evento.id);
@@ -139,6 +146,78 @@ export class EventosService {
         fecha: evento.fechaInicio,
         tokenConfirmacion: predicador.tokenConfirmacion,
       });
+    }
+  }
+
+  /**
+   * Convocatoria masiva a todos los Integrantes de la iglesia (censo por QR), cada
+   * uno con su propio token de RSVP. Filtra siempre por el mismo iglesiaId del
+   * evento — nunca por uno que venga de otro lado.
+   */
+  private async notificarIntegrantes(
+    iglesiaId: string,
+    evento: { id: string; titulo: string; descripcion: string | null },
+    creadoPorId: string,
+  ): Promise<void> {
+    const integrantes = await this.prisma.integrante.findMany({
+      where: { iglesiaId },
+      select: { id: true, email: true },
+    });
+
+    if (integrantes.length === 0) {
+      return;
+    }
+
+    const invitaciones = integrantes.map((integrante) => ({
+      integranteId: integrante.id,
+      email: integrante.email,
+      tokenConfirmacion: generateSecureToken(),
+    }));
+
+    // Fuente de verdad de "a quién se invitó" independiente de si el correo llega
+    // a destino — por eso este insert sí se espera antes de responder al cliente.
+    // Un solo createMany en vez de N inserts secuenciales; skipDuplicates cubre el
+    // caso de reintento gracias a @@unique([eventoId, integranteId]).
+    await this.prisma.asistenciaEvento.createMany({
+      data: invitaciones.map(({ integranteId, tokenConfirmacion }) => ({
+        eventoId: evento.id,
+        integranteId,
+        tokenConfirmacion,
+      })),
+      skipDuplicates: true,
+    });
+
+    const [iglesia, creador] = await Promise.all([
+      this.prisma.iglesia.findUnique({ where: { id: iglesiaId }, select: { nombre: true, logoUrl: true } }),
+      this.prisma.usuario.findUnique({
+        where: { id: creadoPorId },
+        select: { nombre: true, apellido: true },
+      }),
+    ]);
+    const nombreCreador = creador ? `${creador.nombre} ${creador.apellido}` : null;
+
+    // A diferencia de invitarPredicadores (secuencial, topado a 10 destinatarios por
+    // ArrayMaxSize en CreateEventoDto), acá puede haber cientos de integrantes:
+    // esperar el envío de todos los correos antes de responder haría la creación
+    // del evento intolerablemente lenta. Se dispara en paralelo con
+    // Promise.allSettled y NO se espera (sin await) — un fallo acá no debe tumbar
+    // la creación del evento, que ya quedó confirmada en el paso anterior.
+    try {
+      void Promise.allSettled(
+        invitaciones.map((invitacion) =>
+          this.mailService.enviarConvocatoriaEvento({
+            email: invitacion.email,
+            tituloEvento: evento.titulo,
+            descripcionEvento: evento.descripcion,
+            nombreIglesia: iglesia?.nombre ?? 'tu iglesia',
+            logoUrl: iglesia?.logoUrl ?? null,
+            nombreCreador,
+            tokenConfirmacion: invitacion.tokenConfirmacion,
+          }),
+        ),
+      );
+    } catch (error) {
+      this.logger.error(`Fallo al disparar las convocatorias del evento ${evento.id}`, error);
     }
   }
 }

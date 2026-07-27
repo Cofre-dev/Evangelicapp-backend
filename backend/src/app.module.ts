@@ -40,6 +40,10 @@ export class AppModule implements NestModule {
         // Confirmación pública de predicadores: el token de un solo uso es la propia
         // autenticación; no depende de cookies de sesión (ver PredicadoresController).
         { path: 'agenda/predicadores/:token/responder', method: RequestMethod.POST },
+        // RSVP público de integrantes a un evento (convocatoria por email): mismo caso
+        // que la confirmación de predicadores — el token de un solo uso es la propia
+        // autenticación (ver AsistenciasController).
+        { path: 'agenda/asistencias/:token/responder', method: RequestMethod.POST },
         // Registro público de integrantes por QR: mismo caso — si un Pastor/Secretaria
         // logueado abre la landing en el mismo navegador, su cookie de sesión no debe
         // exigir el header CSRF que esa landing pública nunca envía.

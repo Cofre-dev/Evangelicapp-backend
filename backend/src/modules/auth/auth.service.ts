@@ -6,6 +6,7 @@ import * as bcrypt from 'bcrypt';
 import { createHash } from 'crypto';
 import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
 import { generateCsrfToken } from '../../common/utils/generate-csrf-token';
+import { generateSecureToken } from '../../common/utils/generate-secure-token';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -192,6 +193,10 @@ export class AuthService {
       this.jwtService.signAsync(payload, {
         secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
         expiresIn: this.config.get<string>('JWT_REFRESH_EXPIRATION', '7d'),
+        // jti único: sin esto, dos refresh casi simultáneos del mismo usuario
+        // (multi-dispositivo) firman el mismo JWT byte-idéntico (mismo payload +
+        // mismo iat/exp) y el segundo create() revienta el @@unique de tokenHash.
+        jwtid: generateSecureToken(16),
       }),
     ]);
 

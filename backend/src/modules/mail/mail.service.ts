@@ -1,12 +1,24 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as nodemailer from 'nodemailer';
+import { EMAIL_PROVIDER, EmailProvider } from './providers/email-provider.interface';
 
 interface InvitacionPredicadorParams {
   email: string;
   nombreIglesia: string;
   tituloEvento: string;
   fecha: Date;
+  tokenConfirmacion: string;
+}
+
+interface ConvocatoriaEventoParams {
+  email: string;
+  tituloEvento: string;
+  descripcionEvento: string | null;
+  nombreIglesia: string;
+  /** Ruta relativa tal cual se guarda en Iglesia.logoUrl (ej. "/uploads/logos/x.png"), o null. */
+  logoUrl: string | null;
+  /** Nombre completo del pastor/usuario que creó el evento; null si Evento.creadoPorId es null. */
+  nombreCreador: string | null;
   tokenConfirmacion: string;
 }
 
@@ -28,15 +40,11 @@ function escapeHtml(value: string): string {
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
-  private readonly transporter: nodemailer.Transporter;
 
-  constructor(private readonly config: ConfigService) {
-    this.transporter = nodemailer.createTransport({
-      host: this.config.get<string>('SMTP_HOST', 'localhost'),
-      port: this.config.get<number>('SMTP_PORT', 1025),
-      secure: false,
-    });
-  }
+  constructor(
+    private readonly config: ConfigService,
+    @Inject(EMAIL_PROVIDER) private readonly provider: EmailProvider,
+  ) {}
 
   async enviarInvitacionPredicador(params: InvitacionPredicadorParams): Promise<void> {
     const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:3000');
@@ -51,8 +59,7 @@ export class MailService {
     const tituloEvento = escapeHtml(params.tituloEvento);
 
     try {
-      await this.transporter.sendMail({
-        from: this.config.get<string>('MAIL_FROM', '"Evangelicapp" <noreply@evangelicapp.cl>'),
+      await this.provider.sendMail({
         to: params.email,
         subject: `Invitación a predicar — ${params.nombreIglesia}`,
         html: `
@@ -72,6 +79,63 @@ export class MailService {
       // Un fallo de envío no debe tumbar la creación del evento — el pastor
       // igual puede compartir el link de confirmación manualmente si hace falta.
       this.logger.error(`No se pudo enviar la invitación a ${params.email}`, error);
+    }
+  }
+
+  /**
+   * Convocatoria masiva a los Integrantes de la iglesia para un evento con
+   * `notificarIntegrantes = true`. Título/descripción del evento y nombre de
+   * iglesia/creador salen escapados por la misma razón que en
+   * `enviarInvitacionPredicador`: son texto libre del equipo pastoral.
+   */
+  async enviarConvocatoriaEvento(params: ConvocatoriaEventoParams): Promise<void> {
+    const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    const backendUrl = this.config.get<string>('BACKEND_URL', 'http://localhost:3001');
+    const linkBase = `${frontendUrl}/agenda/asistencia/${params.tokenConfirmacion}`;
+    // Ambos botones apuntan al frontend (que llama al GET/POST del backend) con la
+    // respuesta pre-seleccionada por query param — el correo nunca muta estado
+    // directamente vía un link GET.
+    const linkConfirmar = `${linkBase}?respuesta=CONFIRMADO`;
+    const linkRechazar = `${linkBase}?respuesta=RECHAZADO`;
+
+    const tituloEvento = escapeHtml(params.tituloEvento);
+    const nombreIglesia = escapeHtml(params.nombreIglesia);
+    const descripcionEvento = params.descripcionEvento ? escapeHtml(params.descripcionEvento) : null;
+    const firmante = params.nombreCreador
+      ? escapeHtml(params.nombreCreador)
+      : `el equipo pastoral de ${nombreIglesia}`;
+
+    // logoUrl se guarda como ruta relativa servida por app.useStaticAssets (/uploads/...);
+    // un <img> en un correo externo necesita URL absoluta, de ahí BACKEND_URL.
+    const logoHtml = params.logoUrl
+      ? `<img src="${backendUrl}${params.logoUrl}" alt="${nombreIglesia}" style="max-width:72px;max-height:72px;border-radius:8px;margin-bottom:12px;" />`
+      : '';
+
+    try {
+      await this.provider.sendMail({
+        to: params.email,
+        subject: tituloEvento,
+        html: `
+          <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
+            ${logoHtml}
+            <h2 style="color: #0369a1;">${tituloEvento}</h2>
+            ${descripcionEvento ? `<p>${descripcionEvento}</p>` : ''}
+            <p style="margin-top: 24px;">
+              <a href="${linkConfirmar}" style="background:#22c55e;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;margin-right:8px;">
+                Sí, voy a asistir
+              </a>
+              <a href="${linkRechazar}" style="background:#ef4444;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
+                No podré asistir
+              </a>
+            </p>
+            <p style="margin-top: 24px; font-size: 13px; color: #64748b;">${firmante} — ${nombreIglesia}</p>
+          </div>
+        `,
+      });
+    } catch (error) {
+      // Mismo criterio que enviarInvitacionPredicador: un fallo de envío individual
+      // no debe afectar al resto de la convocatoria ni a la creación del evento.
+      this.logger.error(`No se pudo enviar la convocatoria a ${params.email}`, error);
     }
   }
 }

@@ -1,6 +1,7 @@
 import { IsDateString, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { MedioPago } from '@prisma/client';
 
+/** No incluye `departamentoId` a propósito: es inmutable tras crear el movimiento (ver CreateMovimientoDto). */
 export class UpdateMovimientoDto {
   /** Tope real de la columna `monto` (Decimal(12,2) en el schema): hasta 10 dígitos enteros. */
   @IsOptional()

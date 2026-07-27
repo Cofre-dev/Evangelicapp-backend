@@ -15,8 +15,18 @@ export class CategoriasController {
   constructor(private readonly categoriasService: CategoriasService) {}
 
   @Get()
-  findAll(@CurrentUser() user: JwtPayload, @Query('tipo') tipo?: TipoMovimiento) {
-    return this.categoriasService.findAll(this.requireIglesiaId(user), tipo);
+  findAll(
+    @CurrentUser() user: JwtPayload,
+    @Query('tipo') tipo?: TipoMovimiento,
+    @Query('departamentoId') departamentoId?: string,
+    @Query('general') general?: string,
+  ) {
+    return this.categoriasService.findAll(
+      this.requireIglesiaId(user),
+      tipo,
+      departamentoId,
+      general === 'true',
+    );
   }
 
   @Post()

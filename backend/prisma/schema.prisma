@@ -38,6 +38,12 @@ enum EstadoConfirmacionPredicador {
   RECHAZADO
 }
 
+enum EstadoConfirmacionAsistencia {
+  PENDIENTE
+  CONFIRMADO
+  RECHAZADO
+}
+
 enum TipoMovimiento {
   INGRESO
   EGRESO
@@ -73,32 +79,33 @@ enum TipoNota {
 
 /// Cada fila es un tenant. Ninguna tabla transaccional existe sin apuntar aquí.
 model Iglesia {
-  id        String        @id @default(cuid())
-  nombre    String
-  logoUrl   String?
-  comuna    String
-  region    String
-  direccion String?
-  estado    EstadoIglesia @default(ACTIVA)
+  id                 String        @id @default(cuid())
+  nombre             String
+  logoUrl            String?
+  comuna             String
+  region             String
+  direccion          String?
+  estado             EstadoIglesia @default(ACTIVA)
   /// Capturado en el onboarding del pastor; usado en dashboards y reportes.
   visitantesPromedio Int?
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
 
   /// Regenerable por el pastor para invalidar un QR impreso (ej. si se filtró) sin tocar el id real del tenant.
-  integrantesQrToken String?      @unique @default(cuid())
+  integrantesQrToken String? @unique @default(cuid())
 
-  usuarios              Usuario[]
-  eventos               Evento[]
-  categoriasFinancieras CategoriaFinanciera[]
-  movimientos           MovimientoFinanciero[]
-  auditoriasFinancieras MovimientoAuditLog[]
-  notas                 Nota[]
-  integrantes           Integrante[]
-  matrimonios           Matrimonio[]
-  bautizos              Bautizo[]
-  defunciones           Defuncion[]
-  presentaciones        Presentacion[]
+  usuarios                 Usuario[]
+  eventos                  Evento[]
+  categoriasFinancieras    CategoriaFinanciera[]
+  movimientos              MovimientoFinanciero[]
+  auditoriasFinancieras    MovimientoAuditLog[]
+  departamentosFinancieros DepartamentoFinanciero[]
+  notas                    Nota[]
+  integrantes              Integrante[]
+  matrimonios              Matrimonio[]
+  bautizos                 Bautizo[]
+  defunciones              Defuncion[]
+  presentaciones           Presentacion[]
 
   @@map("iglesias")
 }
@@ -129,16 +136,17 @@ model Usuario {
   iglesiaId String?
   iglesia   Iglesia? @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
 
-  eventosCreados     Evento[]                @relation("EventoCreadoPor")
-  movimientosCreados MovimientoFinanciero[]  @relation("MovimientoCreadoPor")
-  auditoriasFinancieras MovimientoAuditLog[] @relation("AuditoriaRealizadaPor")
-  notasCreadas       Nota[]                  @relation("NotaCreadaPor")
-  notasAsignadas     Nota[]                  @relation("NotaAsignadaA")
-  refreshTokens      RefreshToken[]
-  matrimoniosCreados    Matrimonio[]   @relation("MatrimonioCreadoPor")
-  bautizosCreados       Bautizo[]      @relation("BautizoCreadoPor")
-  defuncionesCreadas    Defuncion[]    @relation("DefuncionCreadoPor")
-  presentacionesCreadas Presentacion[] @relation("PresentacionCreadoPor")
+  eventosCreados        Evento[]                 @relation("EventoCreadoPor")
+  movimientosCreados    MovimientoFinanciero[]   @relation("MovimientoCreadoPor")
+  auditoriasFinancieras MovimientoAuditLog[]     @relation("AuditoriaRealizadaPor")
+  departamentosCreados  DepartamentoFinanciero[] @relation("DepartamentoCreadoPor")
+  notasCreadas          Nota[]                   @relation("NotaCreadaPor")
+  notasAsignadas        Nota[]                   @relation("NotaAsignadaA")
+  refreshTokens         RefreshToken[]
+  matrimoniosCreados    Matrimonio[]             @relation("MatrimonioCreadoPor")
+  bautizosCreados       Bautizo[]                @relation("BautizoCreadoPor")
+  defuncionesCreadas    Defuncion[]              @relation("DefuncionCreadoPor")
+  presentacionesCreadas Presentacion[]           @relation("PresentacionCreadoPor")
 
   @@index([iglesiaId])
   @@map("usuarios")
@@ -164,16 +172,20 @@ model RefreshToken {
 // ==========================================================================
 
 model Evento {
-  id            String     @id @default(cuid())
-  titulo        String
-  descripcion   String?
-  tipo          TipoEvento
-  fechaInicio   DateTime
-  fechaFin      DateTime
-  ubicacion     String?
-  colorEtiqueta String?
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  id                   String     @id @default(cuid())
+  titulo               String
+  descripcion          String?
+  tipo                 TipoEvento
+  fechaInicio          DateTime
+  fechaFin             DateTime
+  ubicacion            String?
+  colorEtiqueta        String?
+  /// Checkbox explícito del pastor/secretaria al crear el evento — nunca se dispara
+  /// automáticamente por `tipo` (ver EventosService#create), para que el envío masivo
+  /// a la congregación sea siempre una decisión caso a caso, no un efecto colateral.
+  notificarIntegrantes Boolean    @default(false)
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
 
   iglesiaId String
   iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
@@ -182,6 +194,7 @@ model Evento {
   creadoPor   Usuario? @relation("EventoCreadoPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
 
   predicadores Predicador[]
+  asistencias  AsistenciaEvento[]
 
   @@index([iglesiaId, fechaInicio])
   @@map("eventos")
@@ -208,11 +221,64 @@ model Predicador {
   @@map("predicadores")
 }
 
+/// RSVP masivo a un evento con `notificarIntegrantes = true`. Una fila por
+/// (evento, integrante) — mismo patrón de token público de un solo uso que
+/// Predicador, pero es un flujo separado (congregante vs. predicador invitado)
+/// y por eso tiene su propio enum de estado en vez de reusar el de Predicador.
+model AsistenciaEvento {
+  id                String                       @id @default(cuid())
+  /// Generado en código con un CSPRNG (ver generateSecureToken), no cuid(): es el
+  /// único factor de autenticación de la ruta pública de confirmación.
+  tokenConfirmacion String                       @unique
+  estado            EstadoConfirmacionAsistencia @default(PENDIENTE)
+  respondidoAt      DateTime?
+  createdAt         DateTime                     @default(now())
+
+  eventoId String
+  evento   Evento @relation(fields: [eventoId], references: [id], onDelete: Cascade)
+
+  integranteId String
+  integrante   Integrante @relation(fields: [integranteId], references: [id], onDelete: Cascade)
+
+  // Evita duplicar la invitación al mismo integrante si el envío se reintenta
+  // (createMany usa skipDuplicates apoyado en este mismo constraint).
+  @@unique([eventoId, integranteId])
+  @@index([eventoId])
+  @@map("asistencias_evento")
+}
+
 // ==========================================================================
 // MÓDULO 2 — FINANZAS
 // ==========================================================================
 
+/// Sub-libro financiero opcional dentro de una iglesia (ej. Música, Operaciones).
+/// Un movimiento/categoría con departamentoId = null es "finanzas general" de la iglesia.
+model DepartamentoFinanciero {
+  id     String  @id @default(cuid())
+  nombre String
+  /// Archivado (no hard-delete): oculta el depto del navbar y bloquea nuevos
+  /// movimientos, pero conserva su historial para reportes/exports.
+  activo Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  iglesiaId String
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  creadoPorId String?
+  creadoPor   Usuario? @relation("DepartamentoCreadoPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
+
+  categorias  CategoriaFinanciera[]
+  movimientos MovimientoFinanciero[]
+
+  @@unique([iglesiaId, nombre])
+  @@index([iglesiaId])
+  @@map("departamentos_financieros")
+}
+
 /// Categorías propias por iglesia (ej. Diezmos, Ofrendas, Arriendo, Servicios).
+/// departamentoId = null → categoría de finanzas general; si no, es exclusiva de ese departamento.
 model CategoriaFinanciera {
   id        String         @id @default(cuid())
   nombre    String
@@ -222,9 +288,17 @@ model CategoriaFinanciera {
   iglesiaId String
   iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
 
+  /// Cascade: si se elimina un departamento (solo posible cuando ya no tiene movimientos),
+  /// sus categorías huérfanas se van con él en vez de quedar categorías "general" fantasma.
+  departamentoId String?
+  departamento   DepartamentoFinanciero? @relation(fields: [departamentoId], references: [id], onDelete: Cascade)
+
   movimientos MovimientoFinanciero[]
 
-  @@unique([iglesiaId, nombre, tipo])
+  // NULL != NULL en un unique de Postgres: este constraint no evita dos categorías
+  // "general" (departamentoId null) con el mismo nombre+tipo. Ver CategoriasService.create.
+  @@unique([iglesiaId, departamentoId, nombre, tipo])
+  @@index([iglesiaId, departamentoId])
   @@map("categorias_financieras")
 }
 
@@ -246,10 +320,17 @@ model MovimientoFinanciero {
   categoriaId String
   categoria   CategoriaFinanciera @relation(fields: [categoriaId], references: [id])
 
+  /// Inmutable tras la creación (ver UpdateMovimientoDto): null = finanzas general.
+  /// Restrict (no el default de Prisma): un departamento con movimientos NUNCA se
+  /// puede borrar a nivel de DB, ni siquiera si un bug de aplicación lo permitiera.
+  departamentoId String?
+  departamento   DepartamentoFinanciero? @relation(fields: [departamentoId], references: [id], onDelete: Restrict)
+
   creadoPorId String?
   creadoPor   Usuario? @relation("MovimientoCreadoPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
 
   @@index([iglesiaId, fecha])
+  @@index([iglesiaId, departamentoId, fecha])
   @@map("movimientos_financieros")
 }
 
@@ -267,12 +348,19 @@ model MovimientoAuditLog {
   /// Sin relación FK: el movimiento referenciado puede ya no existir (ELIMINACION).
   movimientoId String
 
+  /// Igual que movimientoId: sin FK, a propósito. Permite filtrar logs por departamento
+  /// (GET /finanzas/movimientos/logs?departamentoId=...) por id estable en vez de por el
+  /// nombre capturado en `snapshot.departamento`, que puede quedar desactualizado si el
+  /// departamento se renombra después de este log.
+  departamentoId String?
+
   usuarioId String?
   usuario   Usuario? @relation("AuditoriaRealizadaPor", fields: [usuarioId], references: [id], onDelete: SetNull)
 
   snapshot Json
 
   @@index([iglesiaId, createdAt])
+  @@index([iglesiaId, departamentoId, createdAt])
   @@map("movimientos_auditoria")
 }
 
@@ -313,7 +401,7 @@ model Nota {
 /// (iglesiaId, email) o (iglesiaId, run): un re-escaneo con un dato ya
 /// registrado NO sobrescribe la fila existente (ver IntegrantesService#registrar).
 model Integrante {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   nombreCompleto String
   email          String
   telefono       String
@@ -326,11 +414,13 @@ model Integrante {
   /// (puede llevar años en la congregación y recién ahora completar el censo).
   /// Nullable por la misma razón que run: filas viejas no lo tienen.
   miembroDesde   DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   iglesiaId String
   iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  asistencias AsistenciaEvento[]
 
   @@unique([iglesiaId, email])
   @@unique([iglesiaId, run])

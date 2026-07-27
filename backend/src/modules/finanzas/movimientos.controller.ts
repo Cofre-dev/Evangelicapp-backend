@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -12,8 +13,11 @@ import {
   Query,
   Res,
   StreamableFile,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { Rol, TipoMovimiento } from '@prisma/client';
 import type { Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -22,15 +26,22 @@ import { ConfirmPasswordDto } from '../../common/dto/confirm-password.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
+import { FinanzasImportService } from './finanzas-import.service';
 import { CreateMovimientoDto } from './dto/create-movimiento.dto';
+import { ImportarMovimientosDto } from './dto/importar-movimientos.dto';
+import { PlantillaMovimientosDto } from './dto/plantilla-movimientos.dto';
 import { UpdateMovimientoDto } from './dto/update-movimiento.dto';
+import { importMovimientosMulterOptions } from './import-movimientos-upload.config';
 import { MovimientosService } from './movimientos.service';
 
 @Controller('finanzas/movimientos')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Rol.PASTOR, Rol.TESORERO)
 export class MovimientosController {
-  constructor(private readonly movimientosService: MovimientosService) {}
+  constructor(
+    private readonly movimientosService: MovimientosService,
+    private readonly finanzasImportService: FinanzasImportService,
+  ) {}
 
   @Get()
   findAll(
@@ -38,27 +49,43 @@ export class MovimientosController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('tipo') tipo?: TipoMovimiento,
+    @Query('departamentoId') departamentoId?: string,
+    @Query('general') general?: string,
   ) {
     return this.movimientosService.findAll(
       this.requireIglesiaId(user),
       from ? new Date(from) : undefined,
       to ? new Date(to) : undefined,
       tipo,
+      departamentoId,
+      general === 'true',
     );
   }
 
   @Get('dashboard')
-  dashboard(@CurrentUser() user: JwtPayload, @Query('from') from?: string, @Query('to') to?: string) {
+  dashboard(
+    @CurrentUser() user: JwtPayload,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('departamentoId') departamentoId?: string,
+    @Query('general') general?: string,
+  ) {
     return this.movimientosService.dashboard(
       this.requireIglesiaId(user),
       from ? new Date(from) : undefined,
       to ? new Date(to) : undefined,
+      departamentoId,
+      general === 'true',
     );
   }
 
   @Get('logs')
-  logs(@CurrentUser() user: JwtPayload) {
-    return this.movimientosService.logs(this.requireIglesiaId(user));
+  logs(
+    @CurrentUser() user: JwtPayload,
+    @Query('departamentoId') departamentoId?: string,
+    @Query('general') general?: string,
+  ) {
+    return this.movimientosService.logs(this.requireIglesiaId(user), departamentoId, general === 'true');
   }
 
   @Get('exportar')
@@ -67,11 +94,15 @@ export class MovimientosController {
     @Res({ passthrough: true }) res: Response,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('departamentoId') departamentoId?: string,
+    @Query('general') general?: string,
   ): Promise<StreamableFile> {
     const buffer = await this.movimientosService.exportar(
       this.requireIglesiaId(user),
       from ? new Date(from) : undefined,
       to ? new Date(to) : undefined,
+      departamentoId,
+      general === 'true',
     );
 
     res.set({
@@ -82,9 +113,50 @@ export class MovimientosController {
     return new StreamableFile(buffer);
   }
 
+  @Get('plantilla')
+  async plantilla(
+    @Query() dto: PlantillaMovimientosDto,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const buffer = await this.finanzasImportService.plantilla(dto.formato);
+
+    if (dto.formato === 'csv') {
+      res.set({
+        'Content-Type': 'text/csv',
+        'Content-Disposition': 'attachment; filename="plantilla-movimientos.csv"',
+      });
+    } else {
+      res.set({
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': 'attachment; filename="plantilla-movimientos.xlsx"',
+      });
+    }
+
+    return new StreamableFile(buffer);
+  }
+
   @Post()
   create(@CurrentUser() user: JwtPayload, @Body() dto: CreateMovimientoDto) {
     return this.movimientosService.create(this.requireIglesiaId(user), user.sub, dto);
+  }
+
+  @Post('importar')
+  @UseInterceptors(FileInterceptor('archivo', importMovimientosMulterOptions))
+  importar(
+    @CurrentUser() user: JwtPayload,
+    @UploadedFile() archivo: Express.Multer.File,
+    @Body() dto: ImportarMovimientosDto,
+  ) {
+    if (!archivo) {
+      throw new BadRequestException('Debes adjuntar un archivo .xlsx o .csv en el campo "archivo"');
+    }
+
+    return this.finanzasImportService.importar(
+      this.requireIglesiaId(user),
+      user.sub,
+      dto.departamentoId,
+      archivo,
+    );
   }
 
   @Patch(':id')

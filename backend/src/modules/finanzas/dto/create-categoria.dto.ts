@@ -1,5 +1,5 @@
 import { TipoMovimiento } from '@prisma/client';
-import { IsEnum, IsNotEmpty, IsString } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class CreateCategoriaDto {
   @IsString()
@@ -8,4 +8,9 @@ export class CreateCategoriaDto {
 
   @IsEnum(TipoMovimiento)
   tipo: TipoMovimiento;
+
+  /** Si no se envía, la categoría queda en finanzas general (no atada a ningún departamento). */
+  @IsOptional()
+  @IsString()
+  departamentoId?: string;
 }

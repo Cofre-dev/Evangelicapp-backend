@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { AccionAuditoria, MedioPago, Prisma, TipoMovimiento } from '@prisma/client';
 import * as ExcelJS from 'exceljs';
 import { AuthService } from '../auth/auth.service';
@@ -11,6 +11,13 @@ export interface FinanzasDashboard {
   totales: { ingresos: number; egresos: number; balance: number };
   porCategoriaIngreso: { categoria: string; total: number }[];
   porCategoriaEgreso: { categoria: string; total: number }[];
+  porDepartamento: {
+    departamentoId: string;
+    nombre: string;
+    ingresos: number;
+    egresos: number;
+    balance: number;
+  }[];
 }
 
 const MEDIO_PAGO_LABEL: Record<MedioPago, string> = {
@@ -18,7 +25,27 @@ const MEDIO_PAGO_LABEL: Record<MedioPago, string> = {
   TRANSFERENCIA: 'Transferencia',
 };
 
-type MovimientoConCategoria = Prisma.MovimientoFinancieroGetPayload<{ include: { categoria: true } }>;
+/** Nombre que se muestra para movimientos sin departamento (finanzas general) en export/UI. */
+export const DEPARTAMENTO_GENERAL_LABEL = 'General';
+
+type MovimientoConCategoria = Prisma.MovimientoFinancieroGetPayload<{
+  include: { categoria: true; departamento: true };
+}>;
+
+/**
+ * Contrato de filtro por departamento, compartido por findAll/dashboard/exportar/logs:
+ * sin parámetros = todo (general + todos los departamentos); `departamentoId` = solo ese
+ * departamento; `general` = solo movimientos sin departamento. `departamentoId` tiene
+ * prioridad si (por error de cliente) llegaran ambos.
+ */
+function filtroDepartamento(
+  departamentoId?: string,
+  general?: boolean,
+): Prisma.MovimientoFinancieroWhereInput {
+  if (departamentoId) return { departamentoId };
+  if (general) return { departamentoId: null };
+  return {};
+}
 
 @Injectable()
 export class MovimientosService {
@@ -27,14 +54,26 @@ export class MovimientosService {
     private readonly authService: AuthService,
   ) {}
 
-  async findAll(iglesiaId: string, from?: Date, to?: Date, tipo?: TipoMovimiento) {
+  async findAll(
+    iglesiaId: string,
+    from?: Date,
+    to?: Date,
+    tipo?: TipoMovimiento,
+    departamentoId?: string,
+    general?: boolean,
+  ) {
     return this.prisma.movimientoFinanciero.findMany({
       where: {
         iglesiaId,
         ...(tipo ? { tipo } : {}),
         ...(from && to ? { fecha: { gte: from, lte: to } } : {}),
+        ...filtroDepartamento(departamentoId, general),
       },
-      include: { categoria: true, creadoPor: { select: { nombre: true, apellido: true } } },
+      include: {
+        categoria: true,
+        departamento: true,
+        creadoPor: { select: { nombre: true, apellido: true } },
+      },
       orderBy: { fecha: 'desc' },
     });
   }
@@ -42,7 +81,11 @@ export class MovimientosService {
   async findOne(iglesiaId: string, id: string) {
     const movimiento = await this.prisma.movimientoFinanciero.findFirst({
       where: { id, iglesiaId },
-      include: { categoria: true, creadoPor: { select: { nombre: true, apellido: true } } },
+      include: {
+        categoria: true,
+        departamento: true,
+        creadoPor: { select: { nombre: true, apellido: true } },
+      },
     });
 
     if (!movimiento) {
@@ -53,7 +96,7 @@ export class MovimientosService {
   }
 
   async create(iglesiaId: string, usuarioId: string, dto: CreateMovimientoDto) {
-    const categoria = await this.categoriaDeLaIglesiaOrThrow(iglesiaId, dto.categoriaId);
+    const categoria = await this.categoriaDeLaIglesiaOrThrow(iglesiaId, dto.categoriaId, dto.departamentoId);
 
     const movimiento = await this.prisma.movimientoFinanciero.create({
       data: {
@@ -63,10 +106,15 @@ export class MovimientosService {
         descripcion: dto.descripcion,
         medioPago: dto.medioPago,
         categoriaId: categoria.id,
+        departamentoId: dto.departamentoId ?? null,
         iglesiaId,
         creadoPorId: usuarioId,
       },
-      include: { categoria: true, creadoPor: { select: { nombre: true, apellido: true } } },
+      include: {
+        categoria: true,
+        departamento: true,
+        creadoPor: { select: { nombre: true, apellido: true } },
+      },
     });
 
     await this.registrarAuditoria(iglesiaId, usuarioId, movimiento.id, AccionAuditoria.CREACION, movimiento);
@@ -75,10 +123,16 @@ export class MovimientosService {
   }
 
   async update(iglesiaId: string, id: string, usuarioId: string, dto: UpdateMovimientoDto) {
-    await this.findOne(iglesiaId, id);
+    const existente = await this.findOne(iglesiaId, id);
 
+    // El departamento del movimiento es inmutable (ver UpdateMovimientoDto): si se cambia
+    // la categoría, la nueva debe pertenecer al mismo destino (general o el mismo depto).
     const categoria = dto.categoriaId
-      ? await this.categoriaDeLaIglesiaOrThrow(iglesiaId, dto.categoriaId)
+      ? await this.categoriaDeLaIglesiaOrThrow(
+          iglesiaId,
+          dto.categoriaId,
+          existente.departamentoId ?? undefined,
+        )
       : undefined;
 
     const movimiento = await this.prisma.movimientoFinanciero.update({
@@ -91,7 +145,11 @@ export class MovimientosService {
         categoriaId: categoria?.id,
         tipo: categoria?.tipo,
       },
-      include: { categoria: true, creadoPor: { select: { nombre: true, apellido: true } } },
+      include: {
+        categoria: true,
+        departamento: true,
+        creadoPor: { select: { nombre: true, apellido: true } },
+      },
     });
 
     await this.registrarAuditoria(iglesiaId, usuarioId, movimiento.id, AccionAuditoria.EDICION, movimiento);
@@ -108,18 +166,32 @@ export class MovimientosService {
     await this.registrarAuditoria(iglesiaId, usuarioId, id, AccionAuditoria.ELIMINACION, movimiento);
   }
 
-  async logs(iglesiaId: string) {
+  async logs(iglesiaId: string, departamentoId?: string, general?: boolean) {
     return this.prisma.movimientoAuditLog.findMany({
-      where: { iglesiaId },
+      where: {
+        iglesiaId,
+        ...(departamentoId ? { departamentoId } : {}),
+        ...(general ? { departamentoId: null } : {}),
+      },
       include: { usuario: { select: { nombre: true, apellido: true } } },
       orderBy: { createdAt: 'desc' },
     });
   }
 
-  async dashboard(iglesiaId: string, from?: Date, to?: Date): Promise<FinanzasDashboard> {
+  async dashboard(
+    iglesiaId: string,
+    from?: Date,
+    to?: Date,
+    departamentoId?: string,
+    general?: boolean,
+  ): Promise<FinanzasDashboard> {
     const movimientos = await this.prisma.movimientoFinanciero.findMany({
-      where: { iglesiaId, ...(from && to ? { fecha: { gte: from, lte: to } } : {}) },
-      include: { categoria: true },
+      where: {
+        iglesiaId,
+        ...(from && to ? { fecha: { gte: from, lte: to } } : {}),
+        ...filtroDepartamento(departamentoId, general),
+      },
+      include: { categoria: true, departamento: true },
     });
 
     const ingresos = movimientos.filter((m) => m.tipo === TipoMovimiento.INGRESO);
@@ -129,14 +201,27 @@ export class MovimientosService {
     const totalEgresos = egresos.reduce((suma, m) => suma + Number(m.monto), 0);
 
     return {
+      // Suma de todo lo que cayó en el filtro (general + departamentos si no se filtró):
+      // es plata de la misma iglesia. El desglose por departamento es informativo,
+      // no un balance aislado por sub-libro.
       totales: { ingresos: totalIngresos, egresos: totalEgresos, balance: totalIngresos - totalEgresos },
       porCategoriaIngreso: this.agruparPorCategoria(ingresos),
       porCategoriaEgreso: this.agruparPorCategoria(egresos),
+      porDepartamento: this.agruparPorDepartamento(movimientos),
     };
   }
 
-  async exportar(iglesiaId: string, from?: Date, to?: Date): Promise<Buffer> {
-    const movimientos = await this.findAll(iglesiaId, from, to);
+  async exportar(
+    iglesiaId: string,
+    from?: Date,
+    to?: Date,
+    departamentoId?: string,
+    general?: boolean,
+  ): Promise<Buffer> {
+    const movimientos = await this.findAll(iglesiaId, from, to, undefined, departamentoId, general);
+    // Solo cuando no se filtró por un destino específico tiene sentido mostrar
+    // subtotales por departamento (si ya se filtró, todas las filas son del mismo destino).
+    const esConsolidado = !departamentoId && !general;
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Movimientos');
@@ -145,6 +230,7 @@ export class MovimientosService {
       { header: 'Fecha', key: 'fecha', width: 14 },
       { header: 'Tipo', key: 'tipo', width: 12 },
       { header: 'Categoría', key: 'categoria', width: 24 },
+      { header: 'Departamento', key: 'departamento', width: 20 },
       { header: 'Medio de pago', key: 'medioPago', width: 16 },
       { header: 'Monto', key: 'monto', width: 16 },
       { header: 'Descripción', key: 'descripcion', width: 34 },
@@ -154,16 +240,25 @@ export class MovimientosService {
 
     let totalIngresos = 0;
     let totalEgresos = 0;
+    const porDepartamento = new Map<string, { ingresos: number; egresos: number }>();
 
     for (const m of movimientos) {
       const monto = Number(m.monto);
+      const nombreDepartamento = m.departamento?.nombre ?? DEPARTAMENTO_GENERAL_LABEL;
+
       if (m.tipo === TipoMovimiento.INGRESO) totalIngresos += monto;
       else totalEgresos += monto;
+
+      const acumulado = porDepartamento.get(nombreDepartamento) ?? { ingresos: 0, egresos: 0 };
+      if (m.tipo === TipoMovimiento.INGRESO) acumulado.ingresos += monto;
+      else acumulado.egresos += monto;
+      porDepartamento.set(nombreDepartamento, acumulado);
 
       sheet.addRow({
         fecha: m.fecha.toLocaleDateString('es-CL'),
         tipo: m.tipo === TipoMovimiento.INGRESO ? 'Ingreso' : 'Egreso',
         categoria: m.categoria.nombre,
+        departamento: nombreDepartamento,
         medioPago: MEDIO_PAGO_LABEL[m.medioPago],
         monto,
         descripcion: m.descripcion,
@@ -171,6 +266,22 @@ export class MovimientosService {
     }
 
     sheet.addRow({});
+
+    if (esConsolidado && porDepartamento.size > 0) {
+      const filaTitulo = sheet.addRow({ categoria: 'Subtotales por departamento' });
+      filaTitulo.font = { bold: true, italic: true };
+
+      for (const [nombre, { ingresos, egresos }] of [...porDepartamento.entries()].sort((a, b) =>
+        a[0].localeCompare(b[0]),
+      )) {
+        sheet.addRow({ departamento: nombre, categoria: 'Ingresos', monto: ingresos });
+        sheet.addRow({ departamento: nombre, categoria: 'Egresos', monto: egresos });
+        sheet.addRow({ departamento: nombre, categoria: 'Balance', monto: ingresos - egresos });
+      }
+
+      sheet.addRow({});
+    }
+
     const filaIngresos = sheet.addRow({ categoria: 'Total ingresos', monto: totalIngresos });
     const filaEgresos = sheet.addRow({ categoria: 'Total egresos', monto: totalEgresos });
     const filaBalance = sheet.addRow({ categoria: 'Balance', monto: totalIngresos - totalEgresos });
@@ -195,7 +306,49 @@ export class MovimientosService {
       .sort((a, b) => b.total - a.total);
   }
 
-  private async categoriaDeLaIglesiaOrThrow(iglesiaId: string, categoriaId: string) {
+  private agruparPorDepartamento(
+    movimientos: {
+      departamento: { id: string; nombre: string } | null;
+      tipo: TipoMovimiento;
+      monto: unknown;
+    }[],
+  ): { departamentoId: string; nombre: string; ingresos: number; egresos: number; balance: number }[] {
+    const totales = new Map<string, { nombre: string; ingresos: number; egresos: number }>();
+
+    for (const m of movimientos) {
+      if (!m.departamento) continue; // el desglose por departamento no incluye finanzas general
+
+      const actual = totales.get(m.departamento.id) ?? {
+        nombre: m.departamento.nombre,
+        ingresos: 0,
+        egresos: 0,
+      };
+      if (m.tipo === TipoMovimiento.INGRESO) actual.ingresos += Number(m.monto);
+      else actual.egresos += Number(m.monto);
+      totales.set(m.departamento.id, actual);
+    }
+
+    return [...totales.entries()]
+      .map(([departamentoId, { nombre, ingresos, egresos }]) => ({
+        departamentoId,
+        nombre,
+        ingresos,
+        egresos,
+        balance: ingresos - egresos,
+      }))
+      .sort((a, b) => a.nombre.localeCompare(b.nombre));
+  }
+
+  /**
+   * Valida que la categoría sea de la iglesia y pertenezca al mismo destino que el
+   * movimiento (general o el departamento indicado) — una categoría de "Música" no
+   * sirve para un movimiento general ni de otro departamento.
+   */
+  private async categoriaDeLaIglesiaOrThrow(iglesiaId: string, categoriaId: string, departamentoId?: string) {
+    if (departamentoId) {
+      await this.departamentoActivoDeLaIglesiaOrThrow(iglesiaId, departamentoId);
+    }
+
     const categoria = await this.prisma.categoriaFinanciera.findFirst({
       where: { id: categoriaId, iglesiaId },
     });
@@ -204,7 +357,29 @@ export class MovimientosService {
       throw new NotFoundException('Categoría no encontrada');
     }
 
+    if ((categoria.departamentoId ?? undefined) !== (departamentoId ?? undefined)) {
+      throw new ConflictException('La categoría no pertenece a ese departamento');
+    }
+
     return categoria;
+  }
+
+  /** Reusado por FinanzasImportService para validar el destino de una importación masiva. */
+  async departamentoActivoDeLaIglesiaOrThrow(iglesiaId: string, departamentoId: string) {
+    const departamento = await this.prisma.departamentoFinanciero.findFirst({
+      where: { id: departamentoId, iglesiaId },
+    });
+
+    if (!departamento) {
+      throw new NotFoundException('Departamento no encontrado');
+    }
+    if (!departamento.activo) {
+      throw new ConflictException(
+        'El departamento está archivado; no se pueden registrar movimientos nuevos en él',
+      );
+    }
+
+    return departamento;
   }
 
   private async registrarAuditoria(
@@ -219,6 +394,7 @@ export class MovimientosService {
         iglesiaId,
         usuarioId,
         movimientoId,
+        departamentoId: movimiento.departamentoId,
         accion,
         snapshot: {
           tipo: movimiento.tipo,
@@ -227,6 +403,7 @@ export class MovimientosService {
           medioPago: movimiento.medioPago,
           fecha: movimiento.fecha.toISOString(),
           categoria: movimiento.categoria.nombre,
+          departamento: movimiento.departamento?.nombre ?? null,
         },
       },
     });

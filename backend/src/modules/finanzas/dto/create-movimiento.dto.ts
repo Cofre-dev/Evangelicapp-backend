@@ -1,4 +1,4 @@
-import { IsDateString, IsEnum, IsNotEmpty, IsNumber, IsString, Max, Min } from 'class-validator';
+import { IsDateString, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { MedioPago } from '@prisma/client';
 
 export class CreateMovimientoDto {
@@ -23,4 +23,13 @@ export class CreateMovimientoDto {
 
   @IsEnum(MedioPago)
   medioPago: MedioPago;
+
+  /**
+   * Si no se envía, el movimiento queda en finanzas general. Inmutable tras la creación
+   * (no existe en UpdateMovimientoDto): si se registró en el destino equivocado, se borra
+   * y se recrea, en vez de permitir mover plata entre libros por una edición.
+   */
+  @IsOptional()
+  @IsString()
+  departamentoId?: string;
 }
