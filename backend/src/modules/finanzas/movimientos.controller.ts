@@ -88,6 +88,31 @@ export class MovimientosController {
     return this.movimientosService.logs(this.requireIglesiaId(user), departamentoId, general === 'true');
   }
 
+  /**
+   * Descarga los logs en .xlsx. Mismo contrato de filtro que GET logs: sin parámetros
+   * descarga el consolidado de toda la iglesia; con departamentoId, solo ese departamento.
+   */
+  @Get('logs/exportar')
+  async exportarLogs(
+    @CurrentUser() user: JwtPayload,
+    @Res({ passthrough: true }) res: Response,
+    @Query('departamentoId') departamentoId?: string,
+    @Query('general') general?: string,
+  ): Promise<StreamableFile> {
+    const buffer = await this.movimientosService.exportarLogs(
+      this.requireIglesiaId(user),
+      departamentoId,
+      general === 'true',
+    );
+
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': 'attachment; filename="logs-auditoria.xlsx"',
+    });
+
+    return new StreamableFile(buffer);
+  }
+
   @Get('exportar')
   async exportar(
     @CurrentUser() user: JwtPayload,

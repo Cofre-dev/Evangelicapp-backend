@@ -25,6 +25,12 @@ const MEDIO_PAGO_LABEL: Record<MedioPago, string> = {
   TRANSFERENCIA: 'Transferencia',
 };
 
+const ACCION_LABEL: Record<AccionAuditoria, string> = {
+  CREACION: 'Creación',
+  EDICION: 'Edición',
+  ELIMINACION: 'Eliminación',
+};
+
 /** Nombre que se muestra para movimientos sin departamento (finanzas general) en export/UI. */
 export const DEPARTAMENTO_GENERAL_LABEL = 'General';
 
@@ -176,6 +182,64 @@ export class MovimientosService {
       include: { usuario: { select: { nombre: true, apellido: true } } },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  /**
+   * Exporta el mismo set de logs que `logs()` a un .xlsx — por departamento (departamentoId),
+   * de finanzas general (general) o consolidado de toda la iglesia (sin filtro). Los datos del
+   * movimiento salen del `snapshot` congelado en el log, nunca del movimiento en vivo: si el
+   * movimiento fue editado o eliminado después, el log debe reflejar el estado de ese momento.
+   */
+  async exportarLogs(iglesiaId: string, departamentoId?: string, general?: boolean): Promise<Buffer> {
+    const logs = await this.logs(iglesiaId, departamentoId, general);
+    const esConsolidado = !departamentoId && !general;
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Logs de auditoría');
+
+    sheet.columns = [
+      { header: 'Fecha', key: 'fecha', width: 18 },
+      { header: 'Acción', key: 'accion', width: 12 },
+      { header: 'Usuario', key: 'usuario', width: 24 },
+      { header: 'Departamento', key: 'departamento', width: 20 },
+      { header: 'Tipo', key: 'tipo', width: 12 },
+      { header: 'Categoría', key: 'categoria', width: 24 },
+      { header: 'Monto', key: 'monto', width: 16 },
+      { header: 'Descripción', key: 'descripcion', width: 34 },
+    ];
+    sheet.getRow(1).font = { bold: true };
+    sheet.getColumn('monto').numFmt = '#,##0';
+
+    for (const log of logs) {
+      const snapshot = log.snapshot as {
+        tipo: TipoMovimiento;
+        monto: number;
+        descripcion: string;
+        categoria: string;
+        departamento: string | null;
+      };
+
+      sheet.addRow({
+        fecha: log.createdAt.toLocaleString('es-CL'),
+        accion: ACCION_LABEL[log.accion],
+        usuario: log.usuario ? `${log.usuario.nombre} ${log.usuario.apellido}` : 'Usuario eliminado',
+        departamento: snapshot.departamento ?? DEPARTAMENTO_GENERAL_LABEL,
+        tipo: snapshot.tipo === TipoMovimiento.INGRESO ? 'Ingreso' : 'Egreso',
+        categoria: snapshot.categoria,
+        monto: snapshot.monto,
+        descripcion: snapshot.descripcion,
+      });
+    }
+
+    sheet.addRow({});
+    const filaResumen = sheet.addRow({
+      accion: esConsolidado ? 'Consolidado — todos los departamentos' : 'Filtrado por destino',
+      categoria: `Total de registros: ${logs.length}`,
+    });
+    filaResumen.font = { italic: true, bold: true };
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(buffer);
   }
 
   async dashboard(

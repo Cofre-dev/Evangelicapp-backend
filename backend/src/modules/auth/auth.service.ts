@@ -4,12 +4,15 @@ import { JwtService } from '@nestjs/jwt';
 import { Usuario } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash } from 'crypto';
+import { unlink } from 'fs/promises';
+import { join } from 'path';
 import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
 import { generateCsrfToken } from '../../common/utils/generate-csrf-token';
 import { generateSecureToken } from '../../common/utils/generate-secure-token';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
 import { JwtRefreshPayload } from './strategies/jwt-refresh.strategy';
 
 export type SafeUsuario = Omit<Usuario, 'password'> & {
@@ -162,6 +165,42 @@ export class AuthService {
         data: { revoked: true },
       }),
     ]);
+  }
+
+  /** Autoedición del perfil: solo datos personales. Username/email/rol quedan fuera de alcance. */
+  async updateMe(
+    usuarioId: string,
+    dto: UpdateMyProfileDto,
+  ): Promise<SafeUsuario & { requiresPasswordChange: boolean; requiresOnboarding: boolean }> {
+    await this.prisma.usuario.update({
+      where: { id: usuarioId },
+      data: { nombre: dto.nombre, apellido: dto.apellido, telefono: dto.telefono },
+    });
+
+    return this.getProfile(usuarioId);
+  }
+
+  /** Reemplaza la foto de perfil, borrando el archivo anterior del disco si existía. */
+  async updateMiFoto(
+    usuarioId: string,
+    foto: Express.Multer.File,
+  ): Promise<SafeUsuario & { requiresPasswordChange: boolean; requiresOnboarding: boolean }> {
+    const usuario = await this.prisma.usuario.findUnique({ where: { id: usuarioId } });
+    if (!usuario) {
+      throw new UnauthorizedException();
+    }
+
+    if (usuario.fotoUrl) {
+      const previousPath = join(process.cwd(), usuario.fotoUrl.replace(/^\//, ''));
+      await unlink(previousPath).catch(() => undefined);
+    }
+
+    await this.prisma.usuario.update({
+      where: { id: usuarioId },
+      data: { fotoUrl: `/uploads/perfiles/${foto.filename}` },
+    });
+
+    return this.getProfile(usuarioId);
   }
 
   /** Confirmación de identidad para acciones sensibles (ej. eliminar un movimiento financiero). */

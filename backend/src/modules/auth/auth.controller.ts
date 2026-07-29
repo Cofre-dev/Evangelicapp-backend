@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -8,9 +9,12 @@ import {
   Post,
   Req,
   Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { Usuario } from '@prisma/client';
 import type { Request, Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -20,6 +24,8 @@ import { AuthService, LoginResponse } from './auth.service';
 import { clearAuthCookies, setAuthCookies } from './cookies';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
+import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
+import { fotoPerfilMulterOptions } from './foto-perfil-upload.config';
 import { JwtRefreshGuard } from './guards/jwt-refresh.guard';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtRefreshPayload } from './strategies/jwt-refresh.strategy';
@@ -92,6 +98,24 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async me(@CurrentUser() user: JwtPayload) {
     return this.authService.getProfile(user.sub);
+  }
+
+  /** Autoedición del perfil (cualquier rol). Solo datos personales: nombre, apellido, teléfono. */
+  @Patch('me')
+  @UseGuards(JwtAuthGuard)
+  async updateMe(@CurrentUser() user: JwtPayload, @Body() dto: UpdateMyProfileDto) {
+    return this.authService.updateMe(user.sub, dto);
+  }
+
+  /** Sube/reemplaza la foto de perfil del usuario autenticado. */
+  @Patch('me/foto')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('foto', fotoPerfilMulterOptions))
+  async updateMiFoto(@CurrentUser() user: JwtPayload, @UploadedFile() foto?: Express.Multer.File) {
+    if (!foto) {
+      throw new BadRequestException('Debe adjuntar un archivo de foto');
+    }
+    return this.authService.updateMiFoto(user.sub, foto);
   }
 
   /**

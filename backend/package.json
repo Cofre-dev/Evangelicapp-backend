@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "sonar": "sonarqube-scanner",
     "build": "nest build",
     "start": "nest start",
     "start:dev": "nest start --watch",
@@ -82,6 +83,7 @@
     "jest": "^30.4.2",
     "prettier": "^3.9.4",
     "prisma": "^5.20.0",
+    "sonarqube-scanner": "^5.0.0",
     "source-map-support": "^0.5.21",
     "ts-jest": "^29.4.11",
     "ts-node": "^10.9.2",

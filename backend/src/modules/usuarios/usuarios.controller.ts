@@ -21,6 +21,13 @@ export class UsuariosController {
     return this.usuariosService.findAllForIglesia(this.requireIglesiaId(user));
   }
 
+  /** Directorio tipo tarjeta de presentación (foto + cargo), visible para todo el equipo. */
+  @Get('equipo')
+  @Roles(Rol.PASTOR, Rol.TESORERO, Rol.SECRETARIA)
+  findDirectorio(@CurrentUser() user: JwtPayload) {
+    return this.usuariosService.findDirectorio(this.requireIglesiaId(user));
+  }
+
   @Post()
   create(@CurrentUser() user: JwtPayload, @Body() dto: CreateUsuarioDto) {
     return this.usuariosService.create(this.requireIglesiaId(user), dto);

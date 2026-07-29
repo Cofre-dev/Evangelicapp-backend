@@ -16,11 +16,16 @@ if (!existsSync(LOGOS_DIR)) {
  * validado por fileFilter), nunca de `file.originalname` — ese nombre lo
  * controla quien sube el archivo, y usarlo permitiría guardar un archivo con
  * contenido cualquiera bajo una extensión ejecutable/servible como `.html`.
+ *
+ * Solo PNG (no JPG/WEBP como antes): el logo se embebe en los certificados de
+ * ceremonias vía pdfkit (`certificado-pdf.builder.ts`), que solo soporta
+ * PNG/JPEG — un logo WEBP se omitía en silencio del certificado. Reducir a un
+ * único formato aceptado evita ese caso, tanto en el alta por SUPER_ADMIN
+ * (IglesiasController.create) como en la edición por el PASTOR
+ * (MiIglesiaController — reusa este mismo config).
  */
 const MIME_EXTENSIONS: Record<string, string> = {
   'image/png': '.png',
-  'image/jpeg': '.jpg',
-  'image/webp': '.webp',
 };
 
 const MAX_LOGO_SIZE_BYTES = 2 * 1024 * 1024;
@@ -37,7 +42,7 @@ export const logoMulterOptions = {
       const extension = MIME_EXTENSIONS[file.mimetype];
       if (!extension) {
         // No debería pasar: fileFilter ya rechazó cualquier mimetype fuera del mapeo.
-        callback(new BadRequestException('El logo debe ser PNG, JPG o WEBP'), '');
+        callback(new BadRequestException('El logo debe ser PNG'), '');
         return;
       }
       callback(null, `${randomUUID()}${extension}`);
@@ -45,7 +50,7 @@ export const logoMulterOptions = {
   }),
   fileFilter: (_req, file: Express.Multer.File, callback: FileFilterCallback) => {
     if (!MIME_EXTENSIONS[file.mimetype]) {
-      callback(new BadRequestException('El logo debe ser PNG, JPG o WEBP'));
+      callback(new BadRequestException('El logo debe ser PNG'));
       return;
     }
     callback(null, true);

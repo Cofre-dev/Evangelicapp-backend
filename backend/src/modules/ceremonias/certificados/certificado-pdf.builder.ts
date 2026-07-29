@@ -27,9 +27,10 @@ export interface CertificadoPdfOptions {
 }
 
 /**
- * `doc.image()` de pdfkit solo soporta PNG/JPEG. El upload de logo de iglesia también
- * acepta WEBP (ver `logo-upload.config.ts`) — en ese caso se omite la imagen y se deja
- * el círculo vacío en vez de romper la generación del certificado.
+ * `doc.image()` de pdfkit solo soporta PNG/JPEG. Desde el fix de `logo-upload.config.ts`,
+ * los logos nuevos (alta de iglesia o `PATCH /mi-iglesia/logo`) son siempre PNG — este
+ * chequeo queda como red de seguridad para logos WEBP subidos antes del fix, que se
+ * omiten en el certificado (círculo vacío) en vez de romper la generación del PDF.
  */
 function resolverLogoPath(logoUrl: string | null): string | null {
   if (!logoUrl) return null;

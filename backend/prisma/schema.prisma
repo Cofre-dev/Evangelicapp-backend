@@ -126,6 +126,7 @@ model Usuario {
   nombre               String
   apellido             String
   telefono             String?
+  fotoUrl              String?
   rol                  Rol
   mustChangePassword   Boolean  @default(true)
   onboardingCompletado Boolean  @default(false)
@@ -377,6 +378,10 @@ model Nota {
   fechaLimite DateTime?
   estado      EstadoTarea @default(PENDIENTE)
   notificado  Boolean     @default(false)
+  /// Solo se puede archivar en estado COMPLETADA (ver NotasService#archivar). Oculta el
+  /// recordatorio del listado por defecto sin perder su historial, mismo patrón que
+  /// DepartamentoFinanciero.activo.
+  archivado   Boolean     @default(false)
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 

@@ -14,9 +14,9 @@ export class NotasService {
   constructor(private readonly prisma: PrismaService) {}
 
   /** Vista completa del pastor: recordatorios y notas largas de toda la iglesia. */
-  async findAll(iglesiaId: string) {
+  async findAll(iglesiaId: string, incluirArchivados: boolean) {
     return this.prisma.nota.findMany({
-      where: { iglesiaId },
+      where: { iglesiaId, ...(incluirArchivados ? {} : { archivado: false }) },
       include: NOTA_INCLUDE,
       orderBy: [{ fechaLimite: 'asc' }, { createdAt: 'desc' }],
     });
@@ -103,6 +103,31 @@ export class NotasService {
     return this.prisma.nota.update({
       where: { id },
       data: { estado: EstadoTarea.EN_REVISION },
+      include: NOTA_INCLUDE,
+    });
+  }
+
+  /** Solo se archiva lo COMPLETADA (aprobado por el pastor) — evita ocultar algo aún en revisión. */
+  async archivar(iglesiaId: string, id: string) {
+    const nota = await this.findOne(iglesiaId, id);
+
+    if (nota.estado !== EstadoTarea.COMPLETADA) {
+      throw new ForbiddenException('Solo se pueden archivar recordatorios completados');
+    }
+
+    return this.prisma.nota.update({
+      where: { id },
+      data: { archivado: true },
+      include: NOTA_INCLUDE,
+    });
+  }
+
+  async desarchivar(iglesiaId: string, id: string) {
+    await this.findOne(iglesiaId, id);
+
+    return this.prisma.nota.update({
+      where: { id },
+      data: { archivado: false },
       include: NOTA_INCLUDE,
     });
   }

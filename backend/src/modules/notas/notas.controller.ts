@@ -9,6 +9,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { Rol } from '@prisma/client';
@@ -29,8 +30,8 @@ export class NotasController {
   constructor(private readonly notasService: NotasService) {}
 
   @Get()
-  findAll(@CurrentUser() user: JwtPayload) {
-    return this.notasService.findAll(this.requireIglesiaId(user));
+  findAll(@CurrentUser() user: JwtPayload, @Query('incluirArchivados') incluirArchivados?: string) {
+    return this.notasService.findAll(this.requireIglesiaId(user), incluirArchivados === 'true');
   }
 
   @Get('mis-tareas')
@@ -53,6 +54,16 @@ export class NotasController {
   @Roles(Rol.PASTOR, Rol.TESORERO, Rol.SECRETARIA)
   marcarHecha(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
     return this.notasService.marcarHecha(this.requireIglesiaId(user), user.sub, id);
+  }
+
+  @Patch(':id/archivar')
+  archivar(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.notasService.archivar(this.requireIglesiaId(user), id);
+  }
+
+  @Patch(':id/desarchivar')
+  desarchivar(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.notasService.desarchivar(this.requireIglesiaId(user), id);
   }
 
   @Delete(':id')

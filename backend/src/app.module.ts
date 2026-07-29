@@ -8,6 +8,7 @@ import { CeremoniasModule } from './modules/ceremonias/ceremonias.module';
 import { FinanzasModule } from './modules/finanzas/finanzas.module';
 import { IglesiasModule } from './modules/iglesias/iglesias.module';
 import { IntegrantesModule } from './modules/integrantes/integrantes.module';
+import { MiIglesiaModule } from './modules/mi-iglesia/mi-iglesia.module';
 import { NotasModule } from './modules/notas/notas.module';
 import { OnboardingModule } from './modules/onboarding/onboarding.module';
 import { SuperAdminModule } from './modules/super-admin/super-admin.module';
@@ -23,6 +24,7 @@ import { PrismaModule } from './prisma/prisma.module';
     UsuariosModule,
     SuperAdminModule,
     IglesiasModule,
+    MiIglesiaModule,
     AgendaModule,
     FinanzasModule,
     NotasModule,

@@ -15,11 +15,29 @@ const USUARIO_SELECT = {
   nombre: true,
   apellido: true,
   telefono: true,
+  fotoUrl: true,
   rol: true,
   activo: true,
   mustChangePassword: true,
   createdAt: true,
 } satisfies Prisma.UsuarioSelect;
+
+const DIRECTORIO_SELECT = {
+  id: true,
+  nombre: true,
+  apellido: true,
+  fotoUrl: true,
+  rol: true,
+} satisfies Prisma.UsuarioSelect;
+
+/** Orden de presentación de la tarjeta: el pastor siempre primero, luego el resto del equipo. */
+const ORDEN_ROL: Record<Rol, number> = {
+  [Rol.PASTOR]: 0,
+  [Rol.TESORERO]: 1,
+  [Rol.SECRETARIA]: 2,
+  [Rol.MIEMBRO]: 3,
+  [Rol.SUPER_ADMIN]: 4,
+};
 
 @Injectable()
 export class UsuariosService {
@@ -32,6 +50,21 @@ export class UsuariosService {
       select: USUARIO_SELECT,
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  /**
+   * Directorio del equipo, tipo "tarjeta de presentación": foto, nombre y cargo de
+   * todos los integrantes activos de la iglesia, incluido el pastor (a diferencia de
+   * findAllForIglesia, que es solo la lista administrable por el pastor). Visible para
+   * cualquier rol de la propia iglesia — ver UsuariosController#equipo.
+   */
+  async findDirectorio(iglesiaId: string) {
+    const usuarios = await this.prisma.usuario.findMany({
+      where: { iglesiaId, activo: true },
+      select: DIRECTORIO_SELECT,
+    });
+
+    return usuarios.sort((a, b) => ORDEN_ROL[a.rol] - ORDEN_ROL[b.rol] || a.nombre.localeCompare(b.nombre));
   }
 
   async create(iglesiaId: string, dto: CreateUsuarioDto) {
