@@ -12,20 +12,23 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { Rol } from '@prisma/client';
+import { ModuloSistema, Rol } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Modulo } from '../../common/decorators/modulo.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { ModuloAccessGuard } from '../../common/guards/modulo-access.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { CreateEventoDto } from './dto/create-evento.dto';
 import { UpdateEventoDto } from './dto/update-evento.dto';
 import { EventosService } from './eventos.service';
 
-/** Agenda compartida del equipo de la iglesia (pastor, tesorero, secretaria). */
+/** Agenda compartida del equipo de la iglesia (manager y usuarios con el módulo Agenda). */
 @Controller('agenda/eventos')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Rol.PASTOR, Rol.TESORERO, Rol.SECRETARIA)
+@UseGuards(JwtAuthGuard, RolesGuard, ModuloAccessGuard)
+@Roles(Rol.MANAGER, Rol.USUARIO)
+@Modulo(ModuloSistema.AGENDA)
 export class EventosController {
   constructor(private readonly eventosService: EventosService) {}
 

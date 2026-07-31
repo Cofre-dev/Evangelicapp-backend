@@ -2,6 +2,7 @@ import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/c
 import { ConfigModule } from '@nestjs/config';
 import { CsrfMiddleware } from './common/middleware/csrf.middleware';
 import { RefreshOriginMiddleware } from './common/middleware/refresh-origin.middleware';
+import { AccesosModule } from './modules/accesos/accesos.module';
 import { AgendaModule } from './modules/agenda/agenda.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CeremoniasModule } from './modules/ceremonias/ceremonias.module';
@@ -22,6 +23,7 @@ import { PrismaModule } from './prisma/prisma.module';
     AuthModule,
     OnboardingModule,
     UsuariosModule,
+    AccesosModule,
     SuperAdminModule,
     IglesiasModule,
     MiIglesiaModule,

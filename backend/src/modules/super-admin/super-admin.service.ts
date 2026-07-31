@@ -29,7 +29,7 @@ export class SuperAdminService {
     const [iglesiasTotal, iglesiasActivas, pastoresTotal, porRegionRaw, iglesias] = await Promise.all([
       this.prisma.iglesia.count(),
       this.prisma.iglesia.count({ where: { estado: EstadoIglesia.ACTIVA } }),
-      this.prisma.usuario.count({ where: { rol: Rol.PASTOR } }),
+      this.prisma.usuario.count({ where: { rol: Rol.MANAGER } }),
       this.prisma.iglesia.groupBy({ by: ['region'], _count: { _all: true } }),
       this.prisma.iglesia.findMany({
         select: {
@@ -41,7 +41,7 @@ export class SuperAdminService {
           estado: true,
           createdAt: true,
           usuarios: {
-            where: { rol: Rol.PASTOR },
+            where: { rol: Rol.MANAGER },
             select: { nombre: true, apellido: true, email: true },
             take: 1,
           },

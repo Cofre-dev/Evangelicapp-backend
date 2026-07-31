@@ -9,17 +9,20 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { Rol } from '@prisma/client';
+import { ModuloSistema, Rol } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Modulo } from '../../common/decorators/modulo.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { ModuloAccessGuard } from '../../common/guards/modulo-access.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { IntegrantesService } from './integrantes.service';
 
 @Controller('integrantes')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Rol.PASTOR, Rol.SECRETARIA)
+@UseGuards(JwtAuthGuard, RolesGuard, ModuloAccessGuard)
+@Roles(Rol.MANAGER, Rol.USUARIO)
+@Modulo(ModuloSistema.INTEGRANTES)
 export class IntegrantesController {
   constructor(private readonly integrantesService: IntegrantesService) {}
 

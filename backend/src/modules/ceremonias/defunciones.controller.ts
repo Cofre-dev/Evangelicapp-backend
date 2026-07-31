@@ -14,12 +14,14 @@ import {
   StreamableFile,
   UseGuards,
 } from '@nestjs/common';
-import { Rol } from '@prisma/client';
+import { ModuloSistema, Rol } from '@prisma/client';
 import type { Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Modulo } from '../../common/decorators/modulo.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ConfirmPasswordDto } from '../../common/dto/confirm-password.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { ModuloAccessGuard } from '../../common/guards/modulo-access.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { DefuncionesService } from './defunciones.service';
@@ -27,8 +29,9 @@ import { CreateDefuncionDto } from './dto/create-defuncion.dto';
 import { UpdateDefuncionDto } from './dto/update-defuncion.dto';
 
 @Controller('ceremonias/defunciones')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Rol.PASTOR, Rol.SECRETARIA)
+@UseGuards(JwtAuthGuard, RolesGuard, ModuloAccessGuard)
+@Roles(Rol.MANAGER, Rol.USUARIO)
+@Modulo(ModuloSistema.CEREMONIAS)
 export class DefuncionesController {
   constructor(private readonly defuncionesService: DefuncionesService) {}
 

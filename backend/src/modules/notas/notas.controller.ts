@@ -22,10 +22,14 @@ import { CreateNotaDto } from './dto/create-nota.dto';
 import { UpdateNotaDto } from './dto/update-nota.dto';
 import { NotasService } from './notas.service';
 
-/** Notas y recordatorios: de uso exclusivo del pastor. Tesorero/secretaria solo ven sus propias tareas asignadas. */
+/**
+ * Notas y recordatorios: de uso exclusivo del MANAGER (no es un módulo delegable
+ * vía AccesoModulo — decisión de producto explícita). Cualquier USUARIO solo ve/
+ * completa sus propias tareas asignadas, sin necesitar un módulo otorgado.
+ */
 @Controller('notas')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Rol.PASTOR)
+@Roles(Rol.MANAGER)
 export class NotasController {
   constructor(private readonly notasService: NotasService) {}
 
@@ -35,7 +39,7 @@ export class NotasController {
   }
 
   @Get('mis-tareas')
-  @Roles(Rol.PASTOR, Rol.TESORERO, Rol.SECRETARIA)
+  @Roles(Rol.MANAGER, Rol.USUARIO)
   findMisTareas(@CurrentUser() user: JwtPayload) {
     return this.notasService.findMisTareas(this.requireIglesiaId(user), user.sub);
   }
@@ -51,7 +55,7 @@ export class NotasController {
   }
 
   @Patch(':id/marcar-hecha')
-  @Roles(Rol.PASTOR, Rol.TESORERO, Rol.SECRETARIA)
+  @Roles(Rol.MANAGER, Rol.USUARIO)
   marcarHecha(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
     return this.notasService.marcarHecha(this.requireIglesiaId(user), user.sub, id);
   }

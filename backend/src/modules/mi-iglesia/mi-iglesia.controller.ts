@@ -20,10 +20,10 @@ import { logoMulterOptions } from '../iglesias/logo-upload.config';
 import { UpdateMiIglesiaDto } from './dto/update-mi-iglesia.dto';
 import { MiIglesiaService } from './mi-iglesia.service';
 
-/** Perfil de la propia iglesia: exclusivo del PASTOR (dueño del tenant). iglesiaId siempre del JWT. */
+/** Perfil de la propia iglesia: exclusivo del MANAGER (dueño del tenant). iglesiaId siempre del JWT. */
 @Controller('mi-iglesia')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Rol.PASTOR)
+@Roles(Rol.MANAGER)
 export class MiIglesiaController {
   constructor(private readonly miIglesiaService: MiIglesiaService) {}
 

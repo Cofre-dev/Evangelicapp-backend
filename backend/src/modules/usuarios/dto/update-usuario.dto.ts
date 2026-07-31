@@ -1,7 +1,4 @@
-import { Rol } from '@prisma/client';
-import { IsBoolean, IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
-
-const ROLES_ASIGNABLES = [Rol.TESORERO, Rol.SECRETARIA] as const;
+import { IsBoolean, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class UpdateUsuarioDto {
   @IsOptional()
@@ -17,10 +14,6 @@ export class UpdateUsuarioDto {
   @IsOptional()
   @IsString()
   telefono?: string;
-
-  @IsOptional()
-  @IsIn(ROLES_ASIGNABLES)
-  rol?: (typeof ROLES_ASIGNABLES)[number];
 
   @IsOptional()
   @IsBoolean()

@@ -26,25 +26,26 @@ const MUST_CHANGE_PASSWORD_ALLOWLIST: ReadonlySet<string> = new Set([
   '/onboarding/complete',
 ]);
 
-// `onboardingCompletado` (solo PASTOR) se deja sin bloqueo de servidor a propósito por ahora:
-// a diferencia de mustChangePassword, requeriría decidir qué endpoints puede tocar un pastor
+// `onboardingCompletado` (solo MANAGER) se deja sin bloqueo de servidor a propósito por ahora:
+// a diferencia de mustChangePassword, requeriría decidir qué endpoints puede tocar un manager
 // a mitad de onboarding (¿usuarios? ¿agenda?) — eso es una decisión de producto, no un bug técnico.
 
 /**
  * Valida el access token en cada request y revalida contra la BD que el
- * usuario siga activo. Así, si un pastor desactiva a su tesorero, el
- * acceso se corta de inmediato en vez de esperar a que expire el token.
+ * usuario siga activo. Así, si un manager desactiva a un usuario de su
+ * equipo, el acceso se corta de inmediato en vez de esperar a que expire el token.
  *
  * Acepta el token desde la cookie httpOnly (flujo actual) o desde el header
  * Authorization: Bearer (compatibilidad hacia atrás mientras el frontend
  * termina de migrar a cookies — remover el segundo extractor después).
  *
- * Limitación conocida: el claim `rol` (y `iglesiaId`) del payload no se
- * revalida contra la BD en cada request, solo `activo` (y ahora
+ * Limitación conocida: el claim `rol` (y `iglesiaId`, y `modulos`) del payload
+ * no se revalida contra la BD en cada request, solo `activo` (y ahora
  * `mustChangePassword`). Si a alguien se le cambia el rol vía `PATCH
- * /usuarios/:id`, el cambio no tiene efecto hasta que expire su access token
- * actual (`JWT_ACCESS_EXPIRATION`, 15m por defecto) — ventana acotada,
- * aceptada a propósito; revalidar el rol en cada request sería un cambio de
+ * /usuarios/:id`, o el MANAGER le otorga/revoca un módulo vía `PUT
+ * /accesos/usuarios/:id`, el cambio no tiene efecto hasta que expire su access
+ * token actual (`JWT_ACCESS_EXPIRATION`, 15m por defecto) — ventana acotada,
+ * aceptada a propósito; revalidar esto en cada request sería un cambio de
  * arquitectura mayor (fuera de alcance por ahora).
  */
 @Injectable()

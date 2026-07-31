@@ -56,7 +56,7 @@ async function main() {
             password: passwordHash,
             nombre: 'Juan',
             apellido: 'Pérez',
-            rol: 'PASTOR',
+            rol: 'MANAGER',
             iglesiaId: iglesia.id,
             mustChangePassword: true,
             onboardingCompletado: false,

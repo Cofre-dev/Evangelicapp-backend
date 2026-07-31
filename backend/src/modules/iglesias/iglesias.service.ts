@@ -12,9 +12,9 @@ export class IglesiasService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Crea la iglesia y su pastor (dueño del tenant) en una sola transacción —
-   * una iglesia sin pastor a cargo no tiene sentido en este modelo. La
-   * contraseña temporal se devuelve una sola vez, igual que con Tesorero/Secretaria.
+   * Crea la iglesia y su manager (dueño del tenant) en una sola transacción —
+   * una iglesia sin manager a cargo no tiene sentido en este modelo. La
+   * contraseña temporal se devuelve una sola vez, igual que con el resto del equipo.
    */
   async create(dto: CreateIglesiaDto, logo?: Express.Multer.File) {
     const temporaryPassword = generateTemporaryPassword();
@@ -39,7 +39,7 @@ export class IglesiasService {
             password: passwordHash,
             nombre: dto.pastorNombre,
             apellido: dto.pastorApellido,
-            rol: Rol.PASTOR,
+            rol: Rol.MANAGER,
             iglesiaId: iglesia.id,
             mustChangePassword: true,
             onboardingCompletado: false,
@@ -56,7 +56,7 @@ export class IglesiasService {
     }
   }
 
-  /** Detalle para el SuperAdmin: la iglesia, quién es el pastor y el resto del equipo. */
+  /** Detalle para el SuperAdmin: la iglesia, quién es el manager y el resto del equipo. */
   async findOne(id: string) {
     const iglesia = await this.prisma.iglesia.findUnique({
       where: { id },
@@ -94,8 +94,8 @@ export class IglesiasService {
 
     return {
       ...iglesiaData,
-      pastor: usuarios.find((u) => u.rol === Rol.PASTOR) ?? null,
-      equipo: usuarios.filter((u) => u.rol !== Rol.PASTOR),
+      pastor: usuarios.find((u) => u.rol === Rol.MANAGER) ?? null,
+      equipo: usuarios.filter((u) => u.rol !== Rol.MANAGER),
     };
   }
 }

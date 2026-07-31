@@ -1,7 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { Usuario } from '@prisma/client';
+import { ModuloSistema, Rol, Usuario } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash } from 'crypto';
 import { unlink } from 'fs/promises';
@@ -28,10 +28,17 @@ export interface AuthTokens {
 }
 
 export interface LoginResponse extends AuthTokens {
-  usuario: SafeUsuario;
+  usuario: SafeUsuario & { modulos: ModuloSistema[] };
   requiresPasswordChange: boolean;
   requiresOnboarding: boolean;
 }
+
+export type PerfilResponse = SafeUsuario & {
+  requiresPasswordChange: boolean;
+  requiresOnboarding: boolean;
+  /** Módulos otorgados leídos frescos de la BD (ver comentario en getProfile). */
+  modulos: ModuloSistema[];
+};
 
 @Injectable()
 export class AuthService {
@@ -67,16 +74,25 @@ export class AuthService {
 
     return {
       ...tokens,
-      usuario: await this.attachIglesia(usuario),
+      usuario: {
+        ...(await this.attachIglesia(usuario)),
+        modulos: await this.getModulosOtorgados(usuario),
+      },
       requiresPasswordChange: usuario.mustChangePassword,
       requiresOnboarding: !usuario.onboardingCompletado,
     };
   }
 
-  /** Rehidrata la sesión en el frontend (F5, apertura de pestaña nueva, etc). */
-  async getProfile(
-    usuarioId: string,
-  ): Promise<SafeUsuario & { requiresPasswordChange: boolean; requiresOnboarding: boolean }> {
+  /**
+   * Rehidrata la sesión en el frontend (F5, apertura de pestaña nueva, etc).
+   *
+   * A diferencia del claim `modulos` del JWT (fijado al emitir el token), acá se
+   * leen frescos de la BD para que el frontend pueda pintar el menú al día apenas
+   * el MANAGER otorga/revoca un módulo — aunque la API todavía no lo permita hasta
+   * que el access token actual expire y se refresque (hasta 15 min, ver
+   * ModuloAccessGuard/JwtStrategy). Es la misma ventana ya aceptada para `rol`.
+   */
+  async getProfile(usuarioId: string): Promise<PerfilResponse> {
     const usuario = await this.prisma.usuario.findUnique({ where: { id: usuarioId } });
     if (!usuario) {
       throw new UnauthorizedException();
@@ -86,6 +102,7 @@ export class AuthService {
       ...(await this.attachIglesia(usuario)),
       requiresPasswordChange: usuario.mustChangePassword,
       requiresOnboarding: !usuario.onboardingCompletado,
+      modulos: await this.getModulosOtorgados(usuario),
     };
   }
 
@@ -168,10 +185,7 @@ export class AuthService {
   }
 
   /** Autoedición del perfil: solo datos personales. Username/email/rol quedan fuera de alcance. */
-  async updateMe(
-    usuarioId: string,
-    dto: UpdateMyProfileDto,
-  ): Promise<SafeUsuario & { requiresPasswordChange: boolean; requiresOnboarding: boolean }> {
+  async updateMe(usuarioId: string, dto: UpdateMyProfileDto): Promise<PerfilResponse> {
     await this.prisma.usuario.update({
       where: { id: usuarioId },
       data: { nombre: dto.nombre, apellido: dto.apellido, telefono: dto.telefono },
@@ -181,10 +195,7 @@ export class AuthService {
   }
 
   /** Reemplaza la foto de perfil, borrando el archivo anterior del disco si existía. */
-  async updateMiFoto(
-    usuarioId: string,
-    foto: Express.Multer.File,
-  ): Promise<SafeUsuario & { requiresPasswordChange: boolean; requiresOnboarding: boolean }> {
+  async updateMiFoto(usuarioId: string, foto: Express.Multer.File): Promise<PerfilResponse> {
     const usuario = await this.prisma.usuario.findUnique({ where: { id: usuarioId } });
     if (!usuario) {
       throw new UnauthorizedException();
@@ -222,6 +233,7 @@ export class AuthService {
       email: usuario.email,
       rol: usuario.rol,
       iglesiaId: usuario.iglesiaId,
+      modulos: await this.getModulosOtorgados(usuario),
     };
 
     const [accessToken, refreshToken] = await Promise.all([
@@ -254,6 +266,25 @@ export class AuthService {
 
   private hashToken(token: string): string {
     return createHash('sha256').update(token).digest('hex');
+  }
+
+  /**
+   * Solo USUARIO tiene módulos delegados por AccesoModulo (ver AccesosModule); para el
+   * resto de los roles el acceso a módulos no se decide por esta lista (MANAGER tiene
+   * acceso total vía ModuloAccessGuard, SUPER_ADMIN/MIEMBRO no usan estos módulos), así
+   * que se evita la query en esos casos.
+   */
+  private async getModulosOtorgados(usuario: Usuario): Promise<ModuloSistema[]> {
+    if (usuario.rol !== Rol.USUARIO) {
+      return [];
+    }
+
+    const accesos = await this.prisma.accesoModulo.findMany({
+      where: { usuarioId: usuario.id },
+      select: { modulo: true },
+    });
+
+    return accesos.map((acceso) => acceso.modulo);
   }
 
   private async attachIglesia(usuario: Usuario): Promise<SafeUsuario> {

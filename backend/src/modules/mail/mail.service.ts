@@ -23,7 +23,7 @@ interface ConvocatoriaEventoParams {
 }
 
 /**
- * `nombreIglesia`/`tituloEvento` los controla cualquier PASTOR/TESORERO/SECRETARIA
+ * `nombreIglesia`/`tituloEvento` los controla cualquier MANAGER/USUARIO
  * (ej. `CreateEventoDto.titulo` solo exige @IsString @IsNotEmpty) y este HTML sale
  * a una casilla externa real — sin escapar, un título malicioso podría inyectar
  * markup/enlaces en el correo del predicador invitado.

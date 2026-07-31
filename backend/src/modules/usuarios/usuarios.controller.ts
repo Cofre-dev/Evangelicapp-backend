@@ -9,10 +9,10 @@ import { CreateUsuarioDto } from './dto/create-usuario.dto';
 import { UpdateUsuarioDto } from './dto/update-usuario.dto';
 import { UsuariosService } from './usuarios.service';
 
-/** Gestión del equipo (Tesorero/Secretaria) de la propia iglesia. Solo PASTOR. */
+/** Gestión del equipo (rol USUARIO) de la propia iglesia. Solo MANAGER. */
 @Controller('usuarios')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Rol.PASTOR)
+@Roles(Rol.MANAGER)
 export class UsuariosController {
   constructor(private readonly usuariosService: UsuariosService) {}
 
@@ -23,7 +23,7 @@ export class UsuariosController {
 
   /** Directorio tipo tarjeta de presentación (foto + cargo), visible para todo el equipo. */
   @Get('equipo')
-  @Roles(Rol.PASTOR, Rol.TESORERO, Rol.SECRETARIA)
+  @Roles(Rol.MANAGER, Rol.USUARIO)
   findDirectorio(@CurrentUser() user: JwtPayload) {
     return this.usuariosService.findDirectorio(this.requireIglesiaId(user));
   }

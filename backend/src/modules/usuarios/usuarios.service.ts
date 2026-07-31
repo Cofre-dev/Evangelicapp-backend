@@ -30,23 +30,22 @@ const DIRECTORIO_SELECT = {
   rol: true,
 } satisfies Prisma.UsuarioSelect;
 
-/** Orden de presentación de la tarjeta: el pastor siempre primero, luego el resto del equipo. */
+/** Orden de presentación de la tarjeta: el manager siempre primero, luego el resto del equipo. */
 const ORDEN_ROL: Record<Rol, number> = {
-  [Rol.PASTOR]: 0,
-  [Rol.TESORERO]: 1,
-  [Rol.SECRETARIA]: 2,
-  [Rol.MIEMBRO]: 3,
-  [Rol.SUPER_ADMIN]: 4,
+  [Rol.MANAGER]: 0,
+  [Rol.USUARIO]: 1,
+  [Rol.MIEMBRO]: 2,
+  [Rol.SUPER_ADMIN]: 3,
 };
 
 @Injectable()
 export class UsuariosService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Equipo de la iglesia (Tesorero/Secretaria). El pastor se gestiona aparte, vía onboarding. */
+  /** Equipo de la iglesia (rol USUARIO). El manager se gestiona aparte, vía onboarding. */
   async findAllForIglesia(iglesiaId: string) {
     return this.prisma.usuario.findMany({
-      where: { iglesiaId, rol: { not: Rol.PASTOR } },
+      where: { iglesiaId, rol: { not: Rol.MANAGER } },
       select: USUARIO_SELECT,
       orderBy: { createdAt: 'desc' },
     });
@@ -54,8 +53,8 @@ export class UsuariosService {
 
   /**
    * Directorio del equipo, tipo "tarjeta de presentación": foto, nombre y cargo de
-   * todos los integrantes activos de la iglesia, incluido el pastor (a diferencia de
-   * findAllForIglesia, que es solo la lista administrable por el pastor). Visible para
+   * todos los integrantes activos de la iglesia, incluido el manager (a diferencia de
+   * findAllForIglesia, que es solo la lista administrable por el manager). Visible para
    * cualquier rol de la propia iglesia — ver UsuariosController#equipo.
    */
   async findDirectorio(iglesiaId: string) {
@@ -80,10 +79,10 @@ export class UsuariosService {
           nombre: dto.nombre,
           apellido: dto.apellido,
           telefono: dto.telefono,
-          rol: dto.rol,
+          rol: Rol.USUARIO,
           iglesiaId,
           mustChangePassword: true,
-          onboardingCompletado: true, // el onboarding de datos personales es exclusivo del pastor
+          onboardingCompletado: true, // el onboarding de datos personales es exclusivo del manager
         },
         select: USUARIO_SELECT,
       });
@@ -106,11 +105,11 @@ export class UsuariosService {
 
   /**
    * Aísla por tenant: si el usuario no pertenece a esta iglesia (o es el propio
-   * PASTOR) se responde 404 en vez de 403, para no filtrar que el registro existe.
+   * MANAGER) se responde 404 en vez de 403, para no filtrar que el registro existe.
    */
   private async findMiembroEquipoOrThrow(iglesiaId: string, usuarioId: string) {
     const usuario = await this.prisma.usuario.findFirst({
-      where: { id: usuarioId, iglesiaId, rol: { not: Rol.PASTOR } },
+      where: { id: usuarioId, iglesiaId, rol: { not: Rol.MANAGER } },
       select: { id: true },
     });
 

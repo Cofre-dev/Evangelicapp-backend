@@ -13,10 +13,17 @@ datasource db {
 
 enum Rol {
   SUPER_ADMIN
-  PASTOR
-  TESORERO
-  SECRETARIA
+  MANAGER
+  USUARIO
   MIEMBRO
+}
+
+/// Módulos delegables por el MANAGER a un USUARIO vía AccesoModulo (pantalla de Accesos).
+enum ModuloSistema {
+  AGENDA
+  FINANZAS
+  CEREMONIAS
+  INTEGRANTES
 }
 
 enum EstadoIglesia {
@@ -106,6 +113,7 @@ model Iglesia {
   bautizos                 Bautizo[]
   defunciones              Defuncion[]
   presentaciones           Presentacion[]
+  accesosModulo            AccesoModulo[]
 
   @@map("iglesias")
 }
@@ -115,7 +123,10 @@ model Iglesia {
 // ==========================================================================
 
 /// SUPER_ADMIN es el único rol con iglesiaId nulo (opera fuera de cualquier tenant).
-/// Todos los demás roles quedan atados a exactamente una iglesia.
+/// Todos los demás roles quedan atados a exactamente una iglesia. MANAGER es dueño
+/// del tenant (equivalente al antiguo PASTOR); USUARIO reemplaza a TESORERO/SECRETARIA
+/// y su acceso a cada módulo (Agenda, Finanzas, Ceremonias, Integrantes) lo otorga el
+/// MANAGER caso a caso vía AccesoModulo, en vez de venir fijo por el rol.
 model Usuario {
   id                   String   @id @default(cuid())
   /// Credencial de login. El email se mantiene como dato de contacto (notificaciones,
@@ -148,6 +159,8 @@ model Usuario {
   bautizosCreados       Bautizo[]                @relation("BautizoCreadoPor")
   defuncionesCreadas    Defuncion[]              @relation("DefuncionCreadoPor")
   presentacionesCreadas Presentacion[]           @relation("PresentacionCreadoPor")
+  accesosPropios        AccesoModulo[]           @relation("AccesosDelUsuario")
+  accesosOtorgados      AccesoModulo[]           @relation("AccesosOtorgados")
 
   @@index([iglesiaId])
   @@map("usuarios")
@@ -166,6 +179,30 @@ model RefreshToken {
 
   @@index([usuarioId])
   @@map("refresh_tokens")
+}
+
+/// Otorga a un usuario con rol USUARIO acceso a un módulo puntual (Agenda, Finanzas,
+/// Ceremonias, Integrantes). Solo el MANAGER de la iglesia los administra (ver módulo
+/// `accesos`). MANAGER/SUPER_ADMIN no necesitan filas acá: su acceso es total por rol.
+model AccesoModulo {
+  id        String        @id @default(cuid())
+  modulo    ModuloSistema
+  createdAt DateTime      @default(now())
+
+  usuarioId String
+  usuario   Usuario @relation("AccesosDelUsuario", fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  iglesiaId String
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  /// Sin FK reforzada por rol a propósito: si el usuario que otorgó el acceso deja la
+  /// iglesia o se desactiva, el acceso otorgado sigue vigente (SetNull en vez de Cascade).
+  otorgadoPorId String?
+  otorgadoPor   Usuario? @relation("AccesosOtorgados", fields: [otorgadoPorId], references: [id], onDelete: SetNull)
+
+  @@unique([usuarioId, modulo])
+  @@index([iglesiaId])
+  @@map("accesos_modulo")
 }
 
 // ==========================================================================

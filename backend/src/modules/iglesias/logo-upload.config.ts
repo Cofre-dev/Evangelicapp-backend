@@ -21,7 +21,7 @@ if (!existsSync(LOGOS_DIR)) {
  * ceremonias vía pdfkit (`certificado-pdf.builder.ts`), que solo soporta
  * PNG/JPEG — un logo WEBP se omitía en silencio del certificado. Reducir a un
  * único formato aceptado evita ese caso, tanto en el alta por SUPER_ADMIN
- * (IglesiasController.create) como en la edición por el PASTOR
+ * (IglesiasController.create) como en la edición por el MANAGER
  * (MiIglesiaController — reusa este mismo config).
  */
 const MIME_EXTENSIONS: Record<string, string> = {

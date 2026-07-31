@@ -9,7 +9,7 @@ import { CompleteOnboardingDto } from './dto/complete-onboarding.dto';
 import { OnboardingService } from './onboarding.service';
 
 /**
- * Solo el PASTOR pasa por este flujo: es el dueño del tenant y quien
+ * Solo el MANAGER pasa por este flujo: es el dueño del tenant y quien
  * recibe las credenciales temporales al crear la iglesia (ver SuperAdminModule).
  */
 @Controller('onboarding')
@@ -18,7 +18,7 @@ export class OnboardingController {
   constructor(private readonly onboardingService: OnboardingService) {}
 
   @Patch('complete')
-  @Roles(Rol.PASTOR)
+  @Roles(Rol.MANAGER)
   async complete(@CurrentUser() user: JwtPayload, @Body() dto: CompleteOnboardingDto) {
     if (!user.iglesiaId) {
       throw new ForbiddenException('El usuario no tiene una iglesia asociada');
