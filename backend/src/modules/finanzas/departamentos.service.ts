@@ -1,5 +1,6 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfirmPasswordDto } from '../../common/dto/confirm-password.dto';
+import { CONTACTO_VENTAS_EMAIL, PLAN_LABEL, PLAN_LIMITS } from '../../common/constants/plan';
 import { translateUniqueConstraintError } from '../../common/utils/translate-unique-constraint-error';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthService } from '../auth/auth.service';
@@ -30,7 +31,37 @@ export class DepartamentosService {
     return departamento;
   }
 
+  /**
+   * Básico/Medio no incluyen subdepartamentos (maxDepartamentosFinancieros: 0, ver
+   * PLAN_LIMITS) — no es solo un tope bajo, es "sin acceso" al concepto completo.
+   * Los ya archivados (activo: false) no cuentan contra el tope: liberan cupo.
+   */
   async create(iglesiaId: string, usuarioId: string, dto: CreateDepartamentoDto) {
+    const iglesia = await this.prisma.iglesia.findUniqueOrThrow({
+      where: { id: iglesiaId },
+      select: { plan: true },
+    });
+
+    const maximo = PLAN_LIMITS[iglesia.plan].maxDepartamentosFinancieros;
+
+    if (maximo === 0) {
+      throw new ForbiddenException({
+        code: 'PLAN_SIN_SUBDEPARTAMENTOS',
+        message: `Tu plan ${PLAN_LABEL[iglesia.plan]} no incluye subdepartamentos de finanzas. Para acceder, escribe a ${CONTACTO_VENTAS_EMAIL}.`,
+        plan: iglesia.plan,
+      });
+    }
+
+    const actuales = await this.prisma.departamentoFinanciero.count({ where: { iglesiaId, activo: true } });
+    if (actuales >= maximo) {
+      throw new ForbiddenException({
+        code: 'PLAN_LIMITE_DEPARTAMENTOS',
+        message: `Tu plan ${PLAN_LABEL[iglesia.plan]} permite hasta ${maximo} subdepartamentos de finanzas. Para ampliarlo, escribe a ${CONTACTO_VENTAS_EMAIL}.`,
+        plan: iglesia.plan,
+        maximo,
+      });
+    }
+
     try {
       return await this.prisma.departamentoFinanciero.create({
         data: { nombre: dto.nombre, iglesiaId, creadoPorId: usuarioId },

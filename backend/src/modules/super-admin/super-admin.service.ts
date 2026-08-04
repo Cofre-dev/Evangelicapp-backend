@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { EstadoIglesia, Rol } from '@prisma/client';
+import { EstadoIglesia, PlanIglesia, Rol } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
 export interface DashboardResponse {
@@ -16,6 +16,7 @@ export interface DashboardResponse {
     region: string;
     logoUrl: string | null;
     estado: EstadoIglesia;
+    plan: PlanIglesia;
     createdAt: Date;
     pastor: { nombre: string; apellido: string; email: string } | null;
   }[];
@@ -39,6 +40,7 @@ export class SuperAdminService {
           region: true,
           logoUrl: true,
           estado: true,
+          plan: true,
           createdAt: true,
           usuarios: {
             where: { rol: Rol.MANAGER },
@@ -62,6 +64,7 @@ export class SuperAdminService {
         region: i.region,
         logoUrl: i.logoUrl,
         estado: i.estado,
+        plan: i.plan,
         createdAt: i.createdAt,
         pastor: i.usuarios[0] ?? null,
       })),

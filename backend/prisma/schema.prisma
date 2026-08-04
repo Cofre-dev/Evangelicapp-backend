@@ -28,8 +28,20 @@ enum ModuloSistema {
 
 enum EstadoIglesia {
   ACTIVA
+  /// Oculta por mora (3+ días sin pagar la mensualidad, ver IglesiasService#ocultar):
+  /// ningún usuario de la iglesia puede iniciar sesión ni mantener una sesión activa
+  /// mientras dure este estado (ver AuthService#validateUser y JwtStrategy#validate).
   SUSPENDIDA
   INACTIVA
+}
+
+/// Plan comercial contratado por la iglesia. Define topes de uso (ver PLAN_LIMITS en
+/// common/constants/plan.ts) — cantidad máxima de usuarios y de subdepartamentos
+/// financieros. Estrategia comercial: siempre empujar al plan más caro (PRO).
+enum PlanIglesia {
+  BASICO
+  MEDIO
+  PRO
 }
 
 enum TipoEvento {
@@ -97,6 +109,22 @@ model Iglesia {
   visitantesPromedio Int?
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
+
+  /// Obligatorio desde el alta — no existe iglesia sin plan asignado (ver
+  /// CreateIglesiaDto). Cambiarlo (ver IglesiasService#cambiarPlan) nunca borra
+  /// ni desactiva datos existentes, solo cambia los topes de uso hacia delante.
+  plan PlanIglesia
+
+  /// Próxima fecha en que corresponde pagar la mensualidad. Fijada por el SuperAdmin
+  /// al crear la iglesia; se recalcula (+1 mes desde esta misma fecha, no desde "hoy",
+  /// para no perder el día del mes acordado) cada vez que se confirma un pago manual
+  /// (ver IglesiasService#marcarPagada). No hay pasarela de pago todavía — el estado
+  /// de pago se confirma a mano por ahora.
+  proximaFacturacion DateTime
+
+  /// Último pago confirmado manualmente por el SuperAdmin. Null si nunca se ha
+  /// marcado un pago (ej. la primera facturación, todavía pendiente).
+  ultimoPagoAt DateTime?
 
   /// Regenerable por el pastor para invalidar un QR impreso (ej. si se filtró) sin tocar el id real del tenant.
   integrantesQrToken String? @unique @default(cuid())

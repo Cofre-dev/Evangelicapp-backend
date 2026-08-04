@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, Rol } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
+import { CONTACTO_VENTAS_EMAIL, PLAN_LABEL, PLAN_LIMITS } from '../../common/constants/plan';
 import { generateTemporaryPassword } from '../../common/utils/generate-temporary-password';
 import { translateUniqueConstraintError } from '../../common/utils/translate-unique-constraint-error';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -66,7 +67,31 @@ export class UsuariosService {
     return usuarios.sort((a, b) => ORDEN_ROL[a.rol] - ORDEN_ROL[b.rol] || a.nombre.localeCompare(b.nombre));
   }
 
+  /**
+   * MANAGER cuenta como un usuario más del tope del plan (ver PLAN_LIMITS): un plan
+   * Básico de "3 usuarios" son 3 en total, incluido el manager. Se cuentan solo los
+   * activos — desactivar a alguien libera un cupo para agregar a otra persona.
+   */
   async create(iglesiaId: string, dto: CreateUsuarioDto) {
+    const iglesia = await this.prisma.iglesia.findUniqueOrThrow({
+      where: { id: iglesiaId },
+      select: { plan: true },
+    });
+
+    const maximo = PLAN_LIMITS[iglesia.plan].maxUsuarios;
+    const actuales = await this.prisma.usuario.count({
+      where: { iglesiaId, activo: true, rol: { in: [Rol.MANAGER, Rol.USUARIO] } },
+    });
+
+    if (actuales >= maximo) {
+      throw new ForbiddenException({
+        code: 'PLAN_LIMITE_USUARIOS',
+        message: `Tu plan ${PLAN_LABEL[iglesia.plan]} solo permite ${maximo} usuarios (incluyendo al manager). Habla con ${CONTACTO_VENTAS_EMAIL} para subir de plan.`,
+        plan: iglesia.plan,
+        maximo,
+      });
+    }
+
     const temporaryPassword = generateTemporaryPassword();
     const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS);
 

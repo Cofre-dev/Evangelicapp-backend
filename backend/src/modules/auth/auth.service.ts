@@ -1,12 +1,14 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { ModuloSistema, Rol, Usuario } from '@prisma/client';
+import { EstadoIglesia, ModuloSistema, PlanIglesia, Rol, Usuario } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash } from 'crypto';
 import { unlink } from 'fs/promises';
 import { join } from 'path';
 import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
+import { IglesiaSuspendidaException } from '../../common/exceptions/iglesia-suspendida.exception';
+import { calcularEstadoFacturacion } from '../../common/utils/calcular-facturacion';
 import { generateCsrfToken } from '../../common/utils/generate-csrf-token';
 import { generateSecureToken } from '../../common/utils/generate-secure-token';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
@@ -16,8 +18,8 @@ import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
 import { JwtRefreshPayload } from './strategies/jwt-refresh.strategy';
 
 export type SafeUsuario = Omit<Usuario, 'password'> & {
-  /** Para que el pastor/equipo vea el logo y nombre de su iglesia en la app. */
-  iglesia: { nombre: string; logoUrl: string | null } | null;
+  /** Para que el pastor/equipo vea el logo, nombre y plan de su iglesia en la app. */
+  iglesia: { nombre: string; logoUrl: string | null; plan: PlanIglesia } | null;
 };
 
 export interface AuthTokens {
@@ -48,9 +50,18 @@ export class AuthService {
     private readonly config: ConfigService,
   ) {}
 
-  /** Usado por LocalStrategy. Mensaje de error genérico para no filtrar si el usuario existe. */
+  /**
+   * Usado por LocalStrategy. Mensaje de error genérico para no filtrar si el usuario
+   * existe — pero esa discreción solo aplica ANTES de confirmar la contraseña. Una
+   * vez que la contraseña ya es correcta, sí es intencional decirle explícitamente
+   * a un usuario de una iglesia en mora por qué no puede entrar (ver
+   * IglesiaSuspendidaException) en vez de darle el mismo error genérico.
+   */
   async validateUser(username: string, password: string): Promise<Usuario> {
-    const usuario = await this.prisma.usuario.findUnique({ where: { username } });
+    const usuario = await this.prisma.usuario.findUnique({
+      where: { username },
+      include: { iglesia: { select: { estado: true, proximaFacturacion: true } } },
+    });
 
     if (!usuario || !usuario.activo) {
       throw new UnauthorizedException('Credenciales inválidas');
@@ -61,7 +72,13 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales inválidas');
     }
 
-    return usuario;
+    if (usuario.iglesia?.estado === EstadoIglesia.SUSPENDIDA) {
+      const { diasEnMora } = calcularEstadoFacturacion(usuario.iglesia.proximaFacturacion);
+      throw new IglesiaSuspendidaException(diasEnMora);
+    }
+
+    const { iglesia, ...usuarioSinIglesia } = usuario;
+    return usuarioSinIglesia;
   }
 
   /**
@@ -291,7 +308,7 @@ export class AuthService {
     const iglesia = usuario.iglesiaId
       ? await this.prisma.iglesia.findUnique({
           where: { id: usuario.iglesiaId },
-          select: { nombre: true, logoUrl: true },
+          select: { nombre: true, logoUrl: true, plan: true },
         })
       : null;
 

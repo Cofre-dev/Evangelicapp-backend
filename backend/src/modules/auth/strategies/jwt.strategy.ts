@@ -1,9 +1,12 @@
 import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
+import { EstadoIglesia } from '@prisma/client';
 import { Request } from 'express';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ACCESS_TOKEN_COOKIE } from '../../../common/constants/auth-cookies';
+import { IglesiaSuspendidaException } from '../../../common/exceptions/iglesia-suspendida.exception';
+import { calcularEstadoFacturacion } from '../../../common/utils/calcular-facturacion';
 import { JwtPayload } from '../../../common/interfaces/jwt-payload.interface';
 import { PrismaService } from '../../../prisma/prisma.service';
 
@@ -65,11 +68,23 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   async validate(req: Request, payload: JwtPayload): Promise<JwtPayload> {
     const usuario = await this.prisma.usuario.findUnique({
       where: { id: payload.sub },
-      select: { id: true, activo: true, mustChangePassword: true },
+      select: {
+        id: true,
+        activo: true,
+        mustChangePassword: true,
+        iglesia: { select: { estado: true, proximaFacturacion: true } },
+      },
     });
 
     if (!usuario || !usuario.activo) {
       throw new UnauthorizedException('Sesión inválida o usuario inactivo');
+    }
+
+    // Igual que `activo`: se revalida en cada request para que ocultar una iglesia
+    // por mora corte el acceso de inmediato, no cuando expire el access token vigente.
+    if (usuario.iglesia?.estado === EstadoIglesia.SUSPENDIDA) {
+      const { diasEnMora } = calcularEstadoFacturacion(usuario.iglesia.proximaFacturacion);
+      throw new IglesiaSuspendidaException(diasEnMora);
     }
 
     if (usuario.mustChangePassword && !MUST_CHANGE_PASSWORD_ALLOWLIST.has(req.path)) {

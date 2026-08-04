@@ -32,6 +32,12 @@ export class MiIglesiaController {
     return this.miIglesiaService.findOne(this.requireIglesiaId(user));
   }
 
+  /** Módulo de facturación: plan contratado, semáforo de pago y uso actual contra los topes del plan. */
+  @Get('facturacion')
+  findFacturacion(@CurrentUser() user: JwtPayload) {
+    return this.miIglesiaService.findFacturacion(this.requireIglesiaId(user));
+  }
+
   @Patch()
   update(@CurrentUser() user: JwtPayload, @Body() dto: UpdateMiIglesiaDto) {
     return this.miIglesiaService.update(this.requireIglesiaId(user), dto);
