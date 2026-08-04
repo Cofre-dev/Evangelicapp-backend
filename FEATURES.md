@@ -101,3 +101,9 @@ Formato de cada entrada:
 - `backend/TODO.md`: marcados como resueltos los ítems "definir estrategia comercial" (planes) y "módulo de roles para el pastor" (módulo `accesos`), y anotada la migración a Supabase.
 
 **Funcionalidad:** el fundador notó que varias cosas que se habían implementado en sesiones/commits anteriores (el módulo de Accesos tipo IAM, `mi-iglesia`, Ceremonias/certificados) nunca quedaron reflejadas en la documentación técnica, además de lo de esta sesión (planes/facturación, Supabase). Esto deja `README.md` y `TODO.md` describiendo el sistema tal como está hoy, no como estaba hace varios commits.
+
+## [2026-08-04 01:00] Nuevo documento: convenciones de commits (`github.md`)
+
+**Cambios:** `github.md` (nuevo, raíz del repo) — guía de cómo hacer commits de ahora en adelante: un commit por cambio describible en una frase, `FEATURES.md` siempre commiteado junto al código que documenta, staging por ruta explícita (`git add -p` para dividir un mismo archivo entre commits), formato de mensaje (`tipo(alcance): resumen` + cuerpo con el porqué), reglas específicas para migraciones de Prisma contra Supabase (`migrate deploy`, nunca `migrate dev`, siempre commiteada junto a su `schema.prisma`), y un checklist pre-commit (lint/build/test/`migrate status`).
+
+**Funcionalidad:** el historial de commits de este repo tiene mensajes genéricos (`"Add"`, `"Add new features"`) que mezclan módulos sin relación, lo que causó que trabajo real (Accesos, Ceremonias, mi-iglesia) quedara sin documentar y generó confusión sobre qué estaba realmente reflejado en la base de datos de Supabase. Este documento fija las reglas para que no se repita — es una guía de proceso, no de negocio ni técnica, por eso vive separado de `README.md`/`CLAUDE.md`.
