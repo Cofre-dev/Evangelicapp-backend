@@ -1,5 +1,3 @@
-import { existsSync } from 'fs';
-import { join } from 'path';
 import PDFDocument from 'pdfkit';
 import { formatearFechaLarga } from '../../../common/utils/formatear-fecha';
 
@@ -31,16 +29,28 @@ export interface CertificadoPdfOptions {
  * los logos nuevos (alta de iglesia o `PATCH /mi-iglesia/logo`) son siempre PNG — este
  * chequeo queda como red de seguridad para logos WEBP subidos antes del fix, que se
  * omiten en el certificado (círculo vacío) en vez de romper la generación del PDF.
+ *
+ * El logo vive en el bucket público `logos-iglesias` de Supabase Storage (Fase 1 de
+ * docs/supabase.md) — se descarga por HTTP en vez de leerse de disco. Si la descarga
+ * falla (bucket caído, URL vieja, etc.), se omite igual que un mimetype no soportado:
+ * el certificado no debe romperse por un logo que no cargó.
  */
-function resolverLogoPath(logoUrl: string | null): string | null {
+async function resolverLogoBuffer(logoUrl: string | null): Promise<Buffer | null> {
   if (!logoUrl) return null;
   if (!/\.(png|jpe?g)$/i.test(logoUrl)) return null;
 
-  const absolutePath = join(process.cwd(), logoUrl.replace(/^\//, ''));
-  return existsSync(absolutePath) ? absolutePath : null;
+  try {
+    const response = await fetch(logoUrl);
+    if (!response.ok) return null;
+    return Buffer.from(await response.arrayBuffer());
+  } catch {
+    return null;
+  }
 }
 
-export function generarCertificadoPdf(options: CertificadoPdfOptions): Promise<Buffer> {
+export async function generarCertificadoPdf(options: CertificadoPdfOptions): Promise<Buffer> {
+  const logoBuffer = await resolverLogoBuffer(options.iglesia.logoUrl);
+
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 0 });
     const chunks: Buffer[] = [];
@@ -49,13 +59,17 @@ export function generarCertificadoPdf(options: CertificadoPdfOptions): Promise<B
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
-    dibujarCertificado(doc, options);
+    dibujarCertificado(doc, options, logoBuffer);
 
     doc.end();
   });
 }
 
-function dibujarCertificado(doc: PDFKit.PDFDocument, options: CertificadoPdfOptions): void {
+function dibujarCertificado(
+  doc: PDFKit.PDFDocument,
+  options: CertificadoPdfOptions,
+  logoBuffer: Buffer | null,
+): void {
   const { width, height } = doc.page;
   const margenExterior = 28;
   const padding = 56;
@@ -88,12 +102,11 @@ function dibujarCertificado(doc: PDFKit.PDFDocument, options: CertificadoPdfOpti
   const logoSize = 64;
   const logoCenterX = width / 2;
   const logoTopY = 50;
-  const logoPath = resolverLogoPath(options.iglesia.logoUrl);
 
   doc.save();
   doc.circle(logoCenterX, logoTopY + logoSize / 2, logoSize / 2).clip();
-  if (logoPath) {
-    doc.image(logoPath, logoCenterX - logoSize / 2, logoTopY, {
+  if (logoBuffer) {
+    doc.image(logoBuffer, logoCenterX - logoSize / 2, logoTopY, {
       fit: [logoSize, logoSize],
       align: 'center',
       valign: 'center',

@@ -1,10 +1,11 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Rol } from '@prisma/client';
-import { unlink } from 'fs/promises';
-import { join } from 'path';
+import { randomUUID } from 'crypto';
 import { PLAN_LIMITS } from '../../common/constants/plan';
 import { calcularEstadoFacturacion } from '../../common/utils/calcular-facturacion';
+import { resolverExtensionLogo } from '../iglesias/logo-upload.config';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { UpdateMiIglesiaDto } from './dto/update-mi-iglesia.dto';
 
 const MI_IGLESIA_SELECT = {
@@ -30,7 +31,10 @@ const MI_IGLESIA_FACTURACION_SELECT = {
 
 @Injectable()
 export class MiIglesiaService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly supabaseStorage: SupabaseStorageService,
+  ) {}
 
   async findOne(iglesiaId: string) {
     const iglesia = await this.prisma.iglesia.findUnique({
@@ -101,18 +105,26 @@ export class MiIglesiaService {
     });
   }
 
-  /** Reemplaza el logo, borrando el archivo anterior del disco si existía. */
+  /**
+   * Reemplaza el logo, borrando el objeto anterior del bucket si existía. Sube el
+   * nuevo antes de borrar el viejo: si la subida falla, la iglesia no se queda sin logo.
+   */
   async updateLogo(iglesiaId: string, logo: Express.Multer.File) {
     const iglesia = await this.findOne(iglesiaId);
 
+    const logoUrl = await this.supabaseStorage.upload(
+      'logos-iglesias',
+      `${randomUUID()}${resolverExtensionLogo(logo.mimetype)}`,
+      logo,
+    );
+
     if (iglesia.logoUrl) {
-      const previousPath = join(process.cwd(), iglesia.logoUrl.replace(/^\//, ''));
-      await unlink(previousPath).catch(() => undefined);
+      await this.supabaseStorage.removeByPublicUrl(iglesia.logoUrl);
     }
 
     return this.prisma.iglesia.update({
       where: { id: iglesiaId },
-      data: { logoUrl: `/uploads/logos/${logo.filename}` },
+      data: { logoUrl },
       select: MI_IGLESIA_SELECT,
     });
   }

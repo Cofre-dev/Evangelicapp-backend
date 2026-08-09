@@ -15,11 +15,13 @@ import { OnboardingModule } from './modules/onboarding/onboarding.module';
 import { SuperAdminModule } from './modules/super-admin/super-admin.module';
 import { UsuariosModule } from './modules/usuarios/usuarios.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { SupabaseModule } from './supabase/supabase.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
+    SupabaseModule,
     AuthModule,
     OnboardingModule,
     UsuariosModule,

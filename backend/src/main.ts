@@ -1,12 +1,10 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
-import { join } from 'path';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const app = await NestFactory.create(AppModule);
 
   // Necesario para que req.cookies exista (lo leen JwtStrategy, JwtRefreshStrategy y CsrfMiddleware).
   app.use(cookieParser());
@@ -31,9 +29,6 @@ async function bootstrap() {
     origin: corsOrigins,
     credentials: true,
   });
-
-  // Storage local de logos (uploads/logos) mientras no haya un bucket configurado.
-  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });
 
   await app.listen(process.env.PORT ?? 3000);
 }

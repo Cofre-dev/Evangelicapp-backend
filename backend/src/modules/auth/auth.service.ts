@@ -3,9 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { EstadoIglesia, ModuloSistema, PlanIglesia, Rol, Usuario } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import { createHash } from 'crypto';
-import { unlink } from 'fs/promises';
-import { join } from 'path';
+import { createHash, randomUUID } from 'crypto';
 import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
 import { IglesiaSuspendidaException } from '../../common/exceptions/iglesia-suspendida.exception';
 import { calcularEstadoFacturacion } from '../../common/utils/calcular-facturacion';
@@ -13,8 +11,10 @@ import { generateCsrfToken } from '../../common/utils/generate-csrf-token';
 import { generateSecureToken } from '../../common/utils/generate-secure-token';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
+import { resolverExtensionFotoPerfil } from './foto-perfil-upload.config';
 import { JwtRefreshPayload } from './strategies/jwt-refresh.strategy';
 
 export type SafeUsuario = Omit<Usuario, 'password'> & {
@@ -48,6 +48,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
+    private readonly supabaseStorage: SupabaseStorageService,
   ) {}
 
   /**
@@ -218,14 +219,19 @@ export class AuthService {
       throw new UnauthorizedException();
     }
 
+    const fotoUrl = await this.supabaseStorage.upload(
+      'fotos-perfil',
+      `${randomUUID()}${resolverExtensionFotoPerfil(foto.mimetype)}`,
+      foto,
+    );
+
     if (usuario.fotoUrl) {
-      const previousPath = join(process.cwd(), usuario.fotoUrl.replace(/^\//, ''));
-      await unlink(previousPath).catch(() => undefined);
+      await this.supabaseStorage.removeByPublicUrl(usuario.fotoUrl);
     }
 
     await this.prisma.usuario.update({
       where: { id: usuarioId },
-      data: { fotoUrl: `/uploads/perfiles/${foto.filename}` },
+      data: { fotoUrl },
     });
 
     return this.getProfile(usuarioId);

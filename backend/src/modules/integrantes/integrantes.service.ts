@@ -2,16 +2,18 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EstadoIglesia } from '@prisma/client';
 import { randomUUID } from 'crypto';
-import { unlink } from 'fs/promises';
 import { translateUniqueConstraintError } from '../../common/utils/translate-unique-constraint-error';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { RegistrarIntegranteDto } from './dto/registrar-integrante.dto';
+import { resolverExtensionFotoIntegrante } from './foto-upload.config';
 
 @Injectable()
 export class IntegrantesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly supabaseStorage: SupabaseStorageService,
   ) {}
 
   private buildUrlRegistro(qrToken: string): string {
@@ -44,15 +46,20 @@ export class IntegrantesService {
    * si ya existe un integrante en esa iglesia con ese email O ese run (basta
    * que coincida cualquiera de los dos), NO se sobrescribe (evita que
    * cualquiera que adivine un correo o un RUN le pise el nombre/teléfono a
-   * otra persona, o reciba de vuelta la fotoUrl real de esa persona —
-   * /uploads se sirve sin auth). La respuesta siempre refleja lo que la
-   * propia request acaba de enviar (nombre tipeado, foto recién subida si la
-   * hay, fecha elegida en este envío), nunca un dato ya guardado de un
-   * registro ajeno.
+   * otra persona, o reciba de vuelta la fotoUrl real de esa persona — el
+   * bucket es público. La respuesta siempre refleja lo que la propia request
+   * acaba de enviar (nombre tipeado, foto recién subida si la hay, fecha
+   * elegida en este envío), nunca un dato ya guardado de un registro ajeno.
    */
   async registrar(qrToken: string, dto: RegistrarIntegranteDto, foto?: Express.Multer.File) {
     const iglesia = await this.findIglesiaActivaPorToken(qrToken);
-    const fotoUrl = foto ? `/uploads/integrantes/${foto.filename}` : undefined;
+    const fotoUrl = foto
+      ? await this.supabaseStorage.upload(
+          'fotos-integrantes',
+          `${randomUUID()}${resolverExtensionFotoIntegrante(foto.mimetype)}`,
+          foto,
+        )
+      : undefined;
 
     const existente = await this.prisma.integrante.findFirst({
       where: {
@@ -62,10 +69,10 @@ export class IntegrantesService {
     });
 
     if (existente) {
-      // La foto ya quedó escrita en disco por Multer antes de llegar acá (si vino);
-      // como no se va a persistir, se descarta para no acumular archivos huérfanos.
-      if (foto) {
-        await unlink(foto.path).catch(() => undefined);
+      // La foto ya se subió al bucket antes de saber si era duplicado (si vino);
+      // como no se va a persistir, se borra para no acumular objetos huérfanos.
+      if (fotoUrl) {
+        await this.supabaseStorage.removeByPublicUrl(fotoUrl);
       }
 
       return {

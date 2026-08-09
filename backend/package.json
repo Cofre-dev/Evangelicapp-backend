@@ -15,7 +15,8 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "test": "jest",
     "prisma:seed": "ts-node prisma/seed.ts",
-    "create:superadmin": "ts-node scripts/create-super-admin.ts"
+    "create:superadmin": "ts-node scripts/create-super-admin.ts",
+    "migrate:uploads": "ts-node scripts/migrate-uploads-to-supabase.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
@@ -45,6 +46,7 @@
     "@nestjs/passport": "^10.0.3",
     "@nestjs/platform-express": "^10.4.0",
     "@prisma/client": "^5.20.0",
+    "@supabase/supabase-js": "^2.112.2",
     "bcrypt": "^5.1.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",

@@ -1,15 +1,18 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { EstadoIglesia, Prisma, Rol } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { randomUUID } from 'crypto';
 import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
 import { PLAN_LIMITS } from '../../common/constants/plan';
 import { calcularEstadoFacturacion, sumarUnMes } from '../../common/utils/calcular-facturacion';
 import { generateTemporaryPassword } from '../../common/utils/generate-temporary-password';
 import { translateUniqueConstraintError } from '../../common/utils/translate-unique-constraint-error';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { ActualizarFacturacionDto } from './dto/actualizar-facturacion.dto';
 import { CambiarPlanDto } from './dto/cambiar-plan.dto';
 import { CreateIglesiaDto } from './dto/create-iglesia.dto';
+import { resolverExtensionLogo } from './logo-upload.config';
 
 const DETALLE_SELECT = {
   id: true,
@@ -41,16 +44,28 @@ const DETALLE_SELECT = {
 
 @Injectable()
 export class IglesiasService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly supabaseStorage: SupabaseStorageService,
+  ) {}
 
   /**
    * Crea la iglesia y su manager (dueño del tenant) en una sola transacción —
    * una iglesia sin manager a cargo no tiene sentido en este modelo. La
    * contraseña temporal se devuelve una sola vez, igual que con el resto del equipo.
+   * El logo se sube a Storage antes de abrir la transacción: es una llamada de red,
+   * no debe mantener la transacción de Prisma abierta mientras espera.
    */
   async create(dto: CreateIglesiaDto, logo?: Express.Multer.File) {
     const temporaryPassword = generateTemporaryPassword();
     const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS);
+    const logoUrl = logo
+      ? await this.supabaseStorage.upload(
+          'logos-iglesias',
+          `${randomUUID()}${resolverExtensionLogo(logo.mimetype)}`,
+          logo,
+        )
+      : undefined;
 
     try {
       const { iglesia, pastor } = await this.prisma.$transaction(async (tx) => {
@@ -62,7 +77,7 @@ export class IglesiasService {
             direccion: dto.direccion,
             plan: dto.plan,
             proximaFacturacion: new Date(dto.proximaFacturacion),
-            logoUrl: logo ? `/uploads/logos/${logo.filename}` : undefined,
+            logoUrl,
           },
         });
 

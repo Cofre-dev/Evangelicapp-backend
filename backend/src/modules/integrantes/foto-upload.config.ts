@@ -1,18 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
-import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync } from 'fs';
-import { diskStorage, type FileFilterCallback } from 'multer';
-import { join } from 'path';
-
-export const INTEGRANTES_DIR = join(process.cwd(), 'uploads', 'integrantes');
-
-if (!existsSync(INTEGRANTES_DIR)) {
-  mkdirSync(INTEGRANTES_DIR, { recursive: true });
-}
+import { memoryStorage, type FileFilterCallback } from 'multer';
 
 /**
  * Única fuente de verdad de mimetypes permitidos y su extensión de guardado.
- * La extensión del archivo en disco SIEMPRE sale de este mapeo (mimetype ya
+ * La extensión del objeto en el bucket SIEMPRE sale de este mapeo (mimetype ya
  * validado por fileFilter), nunca de `file.originalname` — ese nombre lo
  * controla quien sube el archivo, y usarlo permitiría guardar un archivo con
  * contenido cualquiera bajo una extensión ejecutable/servible como `.html`.
@@ -25,24 +16,23 @@ const MIME_EXTENSIONS: Record<string, string> = {
 
 const MAX_FOTO_SIZE_BYTES = 3 * 1024 * 1024;
 
+/** Extensión de guardado para el nombre del objeto en Supabase Storage (bucket `fotos-integrantes`). */
+export function resolverExtensionFotoIntegrante(mimetype: string): string {
+  const extension = MIME_EXTENSIONS[mimetype];
+  if (!extension) {
+    // No debería pasar: fileFilter ya rechazó cualquier mimetype fuera del mapeo.
+    throw new BadRequestException('La foto debe ser PNG, JPG o WEBP');
+  }
+  return extension;
+}
+
 /**
- * Almacenamiento local en disco, mismo criterio que `logo-upload.config.ts`.
+ * Buffer en memoria: el archivo se sube a Supabase Storage, no queda en disco.
  * Este endpoint es público (landing del QR), así que el límite de tamaño y
  * el fileFilter son la única barrera contra archivos maliciosos o abusivos.
  */
 export const integranteFotoMulterOptions = {
-  storage: diskStorage({
-    destination: INTEGRANTES_DIR,
-    filename: (_req, file, callback) => {
-      const extension = MIME_EXTENSIONS[file.mimetype];
-      if (!extension) {
-        // No debería pasar: fileFilter ya rechazó cualquier mimetype fuera del mapeo.
-        callback(new BadRequestException('La foto debe ser PNG, JPG o WEBP'), '');
-        return;
-      }
-      callback(null, `${randomUUID()}${extension}`);
-    },
-  }),
+  storage: memoryStorage(),
   fileFilter: (_req, file: Express.Multer.File, callback: FileFilterCallback) => {
     if (!MIME_EXTENSIONS[file.mimetype]) {
       callback(new BadRequestException('La foto debe ser PNG, JPG o WEBP'));

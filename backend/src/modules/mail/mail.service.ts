@@ -15,7 +15,7 @@ interface ConvocatoriaEventoParams {
   tituloEvento: string;
   descripcionEvento: string | null;
   nombreIglesia: string;
-  /** Ruta relativa tal cual se guarda en Iglesia.logoUrl (ej. "/uploads/logos/x.png"), o null. */
+  /** Tal cual se guarda en Iglesia.logoUrl: URL pública del bucket de Supabase Storage, o null. */
   logoUrl: string | null;
   /** Nombre completo del pastor/usuario que creó el evento; null si Evento.creadoPorId es null. */
   nombreCreador: string | null;
@@ -105,10 +105,16 @@ export class MailService {
       ? escapeHtml(params.nombreCreador)
       : `el equipo pastoral de ${nombreIglesia}`;
 
-    // logoUrl se guarda como ruta relativa servida por app.useStaticAssets (/uploads/...);
-    // un <img> en un correo externo necesita URL absoluta, de ahí BACKEND_URL.
-    const logoHtml = params.logoUrl
-      ? `<img src="${backendUrl}${params.logoUrl}" alt="${nombreIglesia}" style="max-width:72px;max-height:72px;border-radius:8px;margin-bottom:12px;" />`
+    // logoUrl es la URL pública del bucket de Supabase Storage (absoluta). Se mantiene
+    // el fallback con BACKEND_URL por si queda algún logoUrl viejo con ruta relativa
+    // (formato previo a la migración a Storage) sin re-subir.
+    const logoSrc = params.logoUrl
+      ? params.logoUrl.startsWith('http')
+        ? params.logoUrl
+        : `${backendUrl}${params.logoUrl}`
+      : null;
+    const logoHtml = logoSrc
+      ? `<img src="${logoSrc}" alt="${nombreIglesia}" style="max-width:72px;max-height:72px;border-radius:8px;margin-bottom:12px;" />`
       : '';
 
     try {
