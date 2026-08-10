@@ -1,75 +1,124 @@
-# Brief para frontend: logoUrl/fotoUrl ahora son URLs absolutas de Supabase Storage
+# Brief para frontend: fecha de adquisición del plan, historial de pagos, confirmación de cambio de facturación y alertas de vencimiento (Fase 4 de docs/supabase.md)
 
-## Contexto
+## Resumen
 
-El backend migró el storage de logos de iglesia y fotos (perfil, integrantes) de disco local a Supabase Storage (Fase 1 de `docs/supabase.md`, ver entrada `[2026-08-08 21:35]` en `FEATURES.md`). Esto **cambia el formato de los valores que ya te está devolviendo la API** en los campos `logoUrl` y `fotoUrl` — no hay endpoints nuevos ni cambia el flujo de subida.
+Esta vez sí hay trabajo real para el frontend, en 4 frentes independientes:
 
-**Antes:**
+1. **Rompe el formulario de alta de iglesia** — cambió un nombre de campo (obligatorio arreglar).
+2. **Rompe (agrega un requisito a) el cambio de fecha de facturación** — ahora exige contraseña (obligatorio arreglar).
+3. **Historial de pagos** — pantalla/sección nueva a construir (no existía antes).
+4. **Alertas de vencimiento** (modal a 3 días + aviso mientras está vencida) — a construir desde cero, con toda la data que necesitan ya disponible en un endpoint que ya existe.
+
+No pude tocar nada de esto yo mismo: solo tengo acceso a `frontend/src/app/agenda/asistencia` de su repo, el resto de esto vive en las pantallas de SuperAdmin y en el layout autenticado del lado de la iglesia — les dejo el contrato completo y una propuesta de UX para cada punto.
+
+---
+
+## 1. Alta de iglesia (SuperAdmin): `proximaFacturacion` → `fechaAdquisicionPlan`
+
+**Antes** el SuperAdmin elegía a mano la fecha de la primera facturación. **Ahora** elige la fecha en que la iglesia adquirió el plan, y el backend calcula solo la primera facturación (+30 días).
+
+`POST /iglesias` — body cambia:
+```diff
+- proximaFacturacion: "2026-09-05"
++ fechaAdquisicionPlan: "2026-08-10"
+```
+
+La respuesta sigue trayendo `iglesia.proximaFacturacion` ya calculada — si quieren mostrarle al SuperAdmin una preview de "próxima facturación: DD/MM" antes de enviar el formulario, pueden calcularlo ustedes mismos en el cliente (`fechaAdquisicionPlan + 30 días`) o simplemente mostrar el valor que vuelve en la respuesta después de crear.
+
+Nada más cambia en ese formulario (resto de los campos, subida de logo, etc. igual que siempre).
+
+---
+
+## 2. Cambiar fecha de facturación: ahora exige contraseña
+
+`PATCH /iglesias/:id/facturacion` — body cambia:
+```diff
+{
+  "proximaFacturacion": "2026-09-15",
++ "password": "la-contraseña-del-superadmin-logueado"
+}
+```
+
+Es el mismo patrón que ya deben tener implementado para borrar certificados de ceremonias (`ConfirmPasswordDto`) — si ya tienen un componente de "modal, pide tu contraseña para confirmar", es reutilizable acá tal cual.
+
+**Respuestas de error a manejar:**
+- Falta el campo o viene vacío → `400`, `{ "message": ["password should not be empty", ...] }`.
+- Contraseña incorrecta → `401`, `{ "message": "Contraseña incorrecta" }`.
+- Contraseña correcta → `200` con la iglesia actualizada, igual que antes.
+
+Recomendación de copy para el modal: algo como *"Vas a cambiar la fecha de facturación de {iglesia} al {nueva fecha}. Ingresa tu contraseña para confirmar."* — no es una acción destructiva, pero sí afecta cuándo se corta el acceso de una iglesia por mora, así que vale la pena que el modal lo explique.
+
+---
+
+## 3. Historial de pagos (pantalla nueva)
+
+`GET /iglesias/:id/historial-pagos` (SuperAdmin) — nuevo endpoint. Devuelve un array, más reciente primero:
+
 ```json
-{ "logoUrl": "/uploads/logos/101c5e46-f563-411c-b8f5-345922628acb.png" }
+[
+  {
+    "id": "cmsm...",
+    "fecha": "2026-08-10T04:35:10.280Z",
+    "createdAt": "2026-08-10T04:35:10.284Z",
+    "registradoPor": { "id": "cmrh...", "nombre": "Admin", "apellido": "Plataforma" }
+  },
+  {
+    "id": "cmsm...",
+    "fecha": "2026-08-10T00:00:00.000Z",
+    "createdAt": "2026-08-10T04:34:38.690Z",
+    "registradoPor": { "id": "cmrh...", "nombre": "Admin", "apellido": "Plataforma" }
+  }
+]
 ```
-Ruta relativa. Para mostrarla en un `<img>` había que prefijarla con la URL del backend (`API_URL` / `BACKEND_URL`, según cómo la tengan nombrada).
 
-**Ahora:**
+- El **primer registro** (más viejo, al final del array) siempre es la fecha de adquisición del plan.
+- Los siguientes son cada `marcarPagada` (confirmación manual de pago) que se haya hecho.
+- `registradoPor` puede venir `null` si esa cuenta de SuperAdmin ya no existe.
+- No hay monto — el modelo de precios todavía no está definido (ver `CLAUDE.md`), así que no hay un `$` que mostrar todavía. Cuando se defina, este es el lugar natural para agregarlo.
+
+Propuesta de UX: una tabla simple dentro del detalle de la iglesia (donde ya está el semáforo de facturación) — fecha, quién lo registró, nada más por ahora.
+
+---
+
+## 4. Alertas de vencimiento (lado iglesia — Manager)
+
+Esto es lo más grande y donde más autonomía de diseño tienen ustedes: la regla de negocio es "avisar 7 días antes por correo (ya lo hace el backend automáticamente, no requiere nada de ustedes), mostrar un modal a los 3 días, y mantener alguna alerta visible mientras esté vencida".
+
+**No hay endpoint nuevo para esto.** `GET /mi-iglesia/facturacion` (que ya deberían estar consumiendo desde el módulo de Facturación que se construyó en agosto) ya trae absolutamente todo lo necesario:
+
 ```json
-{ "logoUrl": "https://lkcgiqmgdefhxhckedga.supabase.co/storage/v1/object/public/logos-iglesias/101c5e46-f563-411c-b8f5-345922628acb.png" }
+{
+  "...": "...datos de la iglesia...",
+  "plan": "BASICO",
+  "facturacion": {
+    "proximaFacturacion": "2026-08-13T00:00:00.000Z",
+    "diasParaFacturacion": 3,
+    "color": "ROJO",
+    "enMora": false,
+    "diasEnMora": 0,
+    "puedeOcultar": false
+  },
+  "limites": { "...": "..." }
+}
 ```
-URL absoluta, pública, autocontenida. Se usa **tal cual**, sin prefijo.
 
-Aplica a los 3 campos: `Iglesia.logoUrl`, `Usuario.fotoUrl`, `Integrante.fotoUrl` (en cualquier endpoint que los devuelva: `GET /mi-iglesia`, `GET /auth/me`, `GET /integrantes`, la respuesta de login, `GET /integrantes/registro/:qrToken`, `GET /agenda/asistencias/:token`, etc.).
+- `diasParaFacturacion`: positivo = faltan días; `0` = vence hoy; negativo = días vencida (o usar `diasEnMora`, que ya viene positivo).
+- `color`: `VERDE` / `AMARILLO` (≤7 días) / `ROJO` (≤2 días o vencida) — el semáforo ya existe y probablemente ya lo estén pintando en algún lado del dashboard.
+- `enMora`: booleano, vencida o no.
 
-## Lo que SÍ tiene que cambiar en el frontend
+**Propuesta concreta (ajústenla a su criterio de UX, esto es solo un punto de partida):**
 
-**Buscar y corregir cualquier lugar que concatene una URL base con `logoUrl`/`fotoUrl`.** Ese patrón ahora produce una URL rota (URL absoluta pegada dentro de otra URL). Encontré un caso concreto en el repo, en la carpeta a la que tengo acceso:
+- **Modal** ("de buena manera", no agresivo): mostrar cuando `facturacion.diasParaFacturacion` está entre `0` y `3` (inclusive) y `enMora` es `false`. Sugerencia: que se pueda cerrar ("Entendido") pero vuelva a aparecer la próxima vez que abran la app (no marcar como "visto para siempre" en localStorage) — la fecha real no cambió, así que el recordatorio sigue siendo válido al día siguiente si no se resolvió.
+  - Copy sugerido: *"Tu próxima facturación es el {fecha}. Para que tu equipo no pierda acceso, recuerda ponerte al día a tiempo."* — con `diasParaFacturacion === 0` cambiar a *"Tu facturación vence hoy."*
+- **Aviso persistente** (banner, no modal — menos intrusivo para algo que puede durar días): mostrar mientras `enMora === true`. Copy sugerido: *"Tu facturación venció hace {diasEnMora} día(s). Ponte al día para evitar que se suspenda el acceso de tu equipo."* — reforzando el mismo mensaje que ya les llega por correo cada 2 días.
+- Ambos son exclusivamos entre sí en la práctica (antes de vencer vs. ya vencida), así que no debería haber conflicto de cuál mostrar.
 
-- **Archivo:** `frontend/src/app/agenda/asistencia/[token]/page.tsx`, línea 104
-- **Código actual:**
-  ```tsx
-  <Image
-    src={`${API_URL}${data.iglesia.logoUrl}`}
-    alt={`Logo de ${data.iglesia.nombre}`}
-    width={56}
-    height={56}
-  />
-  ```
-- **Corrección:** usar `data.iglesia.logoUrl` directo, sin el prefijo `API_URL`:
-  ```tsx
-  <Image
-    src={data.iglesia.logoUrl}
-    alt={`Logo de ${data.iglesia.nombre}`}
-    width={56}
-    height={56}
-  />
-  ```
-  (Ojo con el `if` que lo envuelve — sigue siendo necesario, `logoUrl` puede venir `null`.)
+**Los correos ya los manda el backend solo, automáticamente** (recordatorio 7 días antes, y aviso cada 2 días mientras esté vencida) — no hay nada que integrar ahí, es informativo por si quieren que el copy del modal/banner sea consistente con el del correo.
 
-Solo tengo acceso a esa carpeta del repo de frontend, así que **no pude auditar el resto** — hay que grepear el proyecto completo por los mismos patrones:
-- Cualquier `` `${API_URL}${...logoUrl}` `` / `` `${BACKEND_URL}${...logoUrl}` `` / `` `${API_URL}${...fotoUrl}` ``
-- Pantallas candidatas por lo que existe hoy en el backend: login/sidebar (logo de la iglesia del usuario logueado), perfil de usuario (foto de perfil), listado de integrantes (censo), landing pública de registro por QR, confirmación de predicador/asistencia por email (la que ya encontré).
+---
 
-**Si usan `next/image` (el componente `<Image>` de Next.js, no un `<img>` plano) en alguna de esas pantallas:** Next.js exige que el dominio de cualquier imagen externa esté explícitamente permitido en `next.config.js` (`images.remotePatterns` o `images.domains`), si no tira un error en runtime ("Invalid src prop... hostname is not configured"). Hay que agregar el dominio de Supabase Storage:
-```js
-// next.config.js
-images: {
-  remotePatterns: [
-    { protocol: 'https', hostname: 'lkcgiqmgdefhxhckedga.supabase.co' },
-  ],
-},
-```
-No pude confirmar si esto ya está configurado (no tengo acceso a `next.config.js` en este repo) — hay que revisarlo. Sin este paso, aunque se corrija el bug de concatenación de arriba, la imagen no va a cargar.
+## Resumen de lo que NO cambió
 
-Si en algún lugar usan una Content Security Policy (`img-src` en headers/meta), también hay que sumar ese dominio ahí.
-
-## Lo que NO cambia (para tranquilidad)
-
-- **El flujo de subida es idéntico**: mismos endpoints, mismo `multipart/form-data`, mismos nombres de campo (`logo`, `foto`), mismas reglas de validación (mimetype/tamaño máximo) — todo eso sigue viviendo y validándose en el backend, no hay nada nuevo que implementar del lado del envío.
-- **Los nombres de los campos en las respuestas no cambiaron**: siguen siendo `logoUrl` / `fotoUrl`, siguen siendo `string | null`. No hay que tocar tipos/DTOs del frontend, solo cómo se **usa** el valor al armar el `src`.
-- No hay endpoints nuevos que integrar.
-
-## Checklist de QA sugerido
-
-- [ ] Grepear todo el repo de frontend por `logoUrl` y `fotoUrl` y revisar cada uso.
-- [ ] Confirmar que ningún lugar sigue prefijando esos valores con `API_URL`/`BACKEND_URL`.
-- [ ] Si usan `next/image`, agregar `lkcgiqmgdefhxhckedga.supabase.co` a `images.remotePatterns` en `next.config.js`.
-- [ ] Probar visualmente: logo de iglesia (dashboard/sidebar), foto de perfil, censo de integrantes, landing pública de registro QR, y la pantalla de confirmación de asistencia por email (`agenda/asistencia/[token]`) que ya sé que tiene el bug.
-- [ ] Verificar que sigue mostrando el estado vacío correctamente cuando `logoUrl`/`fotoUrl` es `null` (no cambió esa lógica, pero vale la pena confirmar junto con lo demás).
+- El resto de los campos/endpoints de iglesias (plan, ocultar/mostrar, etc.) — sin cambios.
+- `GET /iglesias/:id` (detalle SuperAdmin) — mismo shape que siempre, no incluye el historial (usen el endpoint nuevo aparte).
+- Cualquier otro módulo (agenda, finanzas, ceremonias, integrantes) — sin cambios.
