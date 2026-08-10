@@ -2,16 +2,21 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfirmPasswordDto } from '../../common/dto/confirm-password.dto';
 import { formatearFechaLarga } from '../../common/utils/formatear-fecha';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { AuthService } from '../auth/auth.service';
+import { resolverObjectNameCertificado } from './certificados/certificado-cache.util';
 import { generarCertificadoPdf } from './certificados/certificado-pdf.builder';
 import { CreatePresentacionDto } from './dto/create-presentacion.dto';
 import { UpdatePresentacionDto } from './dto/update-presentacion.dto';
+
+const CERTIFICADOS_BUCKET = 'certificados-ceremonias';
 
 @Injectable()
 export class PresentacionesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authService: AuthService,
+    private readonly supabaseStorage: SupabaseStorageService,
   ) {}
 
   async findAll(iglesiaId: string, from?: Date, to?: Date) {
@@ -80,30 +85,39 @@ export class PresentacionesService {
       select: { nombre: true, logoUrl: true },
     });
 
-    const buffer = await generarCertificadoPdf({
-      subtitulo: 'DE PRESENTACIÓN',
-      firmaCaption: 'Pastor(a) que realizó la presentación',
-      nombrePastor: presentacion.nombrePastor,
-      folio: presentacion.folio,
-      iglesia,
-      parrafo: [
-        {
-          texto: `${iglesia.nombre}, comunidad evangélica congregada en ${presentacion.ciudad}, deja constancia que con fecha ${formatearFechaLarga(presentacion.fecha)} fue presentado(a) ante la congregación el(la) niño(a) `,
-        },
-        { texto: presentacion.nombreNino, negrita: true },
-        { texto: ', hijo(a) de ' },
-        { texto: presentacion.nombrePadres, negrita: true },
-        {
-          texto:
-            ', quienes lo(a) consagran al cuidado y las bendiciones de Dios, conforme a los principios de la fe cristiana evangélica, bajo el cuidado pastoral de ',
-        },
-        { texto: presentacion.nombrePastor, negrita: true },
-        {
-          texto:
-            '. Se extiende el presente certificado para los fines que los interesados estimen pertinentes.',
-        },
-      ],
+    const objectName = resolverObjectNameCertificado({
+      tipo: 'presentaciones',
+      id: presentacion.id,
+      actualizadoEn: presentacion.updatedAt,
+      logoUrl: iglesia.logoUrl,
     });
+
+    const buffer = await this.supabaseStorage.getOrGenerate(CERTIFICADOS_BUCKET, objectName, () =>
+      generarCertificadoPdf({
+        subtitulo: 'DE PRESENTACIÓN',
+        firmaCaption: 'Pastor(a) que realizó la presentación',
+        nombrePastor: presentacion.nombrePastor,
+        folio: presentacion.folio,
+        iglesia,
+        parrafo: [
+          {
+            texto: `${iglesia.nombre}, comunidad evangélica congregada en ${presentacion.ciudad}, deja constancia que con fecha ${formatearFechaLarga(presentacion.fecha)} fue presentado(a) ante la congregación el(la) niño(a) `,
+          },
+          { texto: presentacion.nombreNino, negrita: true },
+          { texto: ', hijo(a) de ' },
+          { texto: presentacion.nombrePadres, negrita: true },
+          {
+            texto:
+              ', quienes lo(a) consagran al cuidado y las bendiciones de Dios, conforme a los principios de la fe cristiana evangélica, bajo el cuidado pastoral de ',
+          },
+          { texto: presentacion.nombrePastor, negrita: true },
+          {
+            texto:
+              '. Se extiende el presente certificado para los fines que los interesados estimen pertinentes.',
+          },
+        ],
+      }),
+    );
 
     return { buffer, folio: presentacion.folio };
   }

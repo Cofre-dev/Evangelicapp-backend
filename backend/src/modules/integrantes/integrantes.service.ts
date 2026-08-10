@@ -6,7 +6,7 @@ import { translateUniqueConstraintError } from '../../common/utils/translate-uni
 import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { RegistrarIntegranteDto } from './dto/registrar-integrante.dto';
-import { resolverExtensionFotoIntegrante } from './foto-upload.config';
+import { FOTO_INTEGRANTE_RESIZE, resolverExtensionFotoIntegrante } from './foto-upload.config';
 
 @Injectable()
 export class IntegrantesService {
@@ -58,6 +58,7 @@ export class IntegrantesService {
           'fotos-integrantes',
           `${randomUUID()}${resolverExtensionFotoIntegrante(foto.mimetype)}`,
           foto,
+          FOTO_INTEGRANTE_RESIZE,
         )
       : undefined;
 

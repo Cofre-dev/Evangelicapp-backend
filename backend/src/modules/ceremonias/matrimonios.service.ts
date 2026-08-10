@@ -2,16 +2,21 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfirmPasswordDto } from '../../common/dto/confirm-password.dto';
 import { formatearFechaLarga } from '../../common/utils/formatear-fecha';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { AuthService } from '../auth/auth.service';
+import { resolverObjectNameCertificado } from './certificados/certificado-cache.util';
 import { generarCertificadoPdf } from './certificados/certificado-pdf.builder';
 import { CreateMatrimonioDto } from './dto/create-matrimonio.dto';
 import { UpdateMatrimonioDto } from './dto/update-matrimonio.dto';
+
+const CERTIFICADOS_BUCKET = 'certificados-ceremonias';
 
 @Injectable()
 export class MatrimoniosService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authService: AuthService,
+    private readonly supabaseStorage: SupabaseStorageService,
   ) {}
 
   async findAll(iglesiaId: string, from?: Date, to?: Date) {
@@ -80,30 +85,39 @@ export class MatrimoniosService {
       select: { nombre: true, logoUrl: true },
     });
 
-    const buffer = await generarCertificadoPdf({
-      subtitulo: 'DE MATRIMONIO',
-      firmaCaption: 'Pastor(a) que ofició la ceremonia',
-      nombrePastor: matrimonio.nombrePastor,
-      folio: matrimonio.folio,
-      iglesia,
-      parrafo: [
-        {
-          texto: `${iglesia.nombre}, comunidad evangélica congregada en ${matrimonio.ciudad}, deja constancia que con fecha ${formatearFechaLarga(matrimonio.fecha)} se celebró el matrimonio de `,
-        },
-        { texto: matrimonio.nombreNovio, negrita: true },
-        { texto: ' y ' },
-        { texto: matrimonio.nombreNovia, negrita: true },
-        {
-          texto:
-            ', quienes se unieron en matrimonio ante Dios y esta congregación, conforme a los principios de la fe cristiana evangélica, bajo el cuidado pastoral de ',
-        },
-        { texto: matrimonio.nombrePastor, negrita: true },
-        {
-          texto:
-            '. Se extiende el presente certificado para los fines que los interesados estimen pertinentes.',
-        },
-      ],
+    const objectName = resolverObjectNameCertificado({
+      tipo: 'matrimonios',
+      id: matrimonio.id,
+      actualizadoEn: matrimonio.updatedAt,
+      logoUrl: iglesia.logoUrl,
     });
+
+    const buffer = await this.supabaseStorage.getOrGenerate(CERTIFICADOS_BUCKET, objectName, () =>
+      generarCertificadoPdf({
+        subtitulo: 'DE MATRIMONIO',
+        firmaCaption: 'Pastor(a) que ofició la ceremonia',
+        nombrePastor: matrimonio.nombrePastor,
+        folio: matrimonio.folio,
+        iglesia,
+        parrafo: [
+          {
+            texto: `${iglesia.nombre}, comunidad evangélica congregada en ${matrimonio.ciudad}, deja constancia que con fecha ${formatearFechaLarga(matrimonio.fecha)} se celebró el matrimonio de `,
+          },
+          { texto: matrimonio.nombreNovio, negrita: true },
+          { texto: ' y ' },
+          { texto: matrimonio.nombreNovia, negrita: true },
+          {
+            texto:
+              ', quienes se unieron en matrimonio ante Dios y esta congregación, conforme a los principios de la fe cristiana evangélica, bajo el cuidado pastoral de ',
+          },
+          { texto: matrimonio.nombrePastor, negrita: true },
+          {
+            texto:
+              '. Se extiende el presente certificado para los fines que los interesados estimen pertinentes.',
+          },
+        ],
+      }),
+    );
 
     return { buffer, folio: matrimonio.folio };
   }

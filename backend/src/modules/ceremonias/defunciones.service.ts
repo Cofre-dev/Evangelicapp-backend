@@ -2,16 +2,21 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfirmPasswordDto } from '../../common/dto/confirm-password.dto';
 import { formatearFechaLarga } from '../../common/utils/formatear-fecha';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { AuthService } from '../auth/auth.service';
+import { resolverObjectNameCertificado } from './certificados/certificado-cache.util';
 import { generarCertificadoPdf } from './certificados/certificado-pdf.builder';
 import { CreateDefuncionDto } from './dto/create-defuncion.dto';
 import { UpdateDefuncionDto } from './dto/update-defuncion.dto';
+
+const CERTIFICADOS_BUCKET = 'certificados-ceremonias';
 
 @Injectable()
 export class DefuncionesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authService: AuthService,
+    private readonly supabaseStorage: SupabaseStorageService,
   ) {}
 
   async findAll(iglesiaId: string, from?: Date, to?: Date) {
@@ -78,24 +83,33 @@ export class DefuncionesService {
       select: { nombre: true, logoUrl: true },
     });
 
-    const buffer = await generarCertificadoPdf({
-      subtitulo: 'DE DEFUNCIÓN',
-      firmaCaption: 'Pastor(a) oficiante',
-      nombrePastor: defuncion.nombrePastor,
-      folio: defuncion.folio,
-      iglesia,
-      parrafo: [
-        {
-          texto: `${iglesia.nombre}, comunidad evangélica congregada en ${defuncion.ciudad}, deja constancia que `,
-        },
-        { texto: defuncion.nombreDifunto, negrita: true },
-        {
-          texto: `, miembro de esta congregación, partió a la presencia del Señor con fecha ${formatearFechaLarga(defuncion.fecha)}, habiendo profesado la fe cristiana evangélica. El presente certificado se extiende en su memoria, bajo el cuidado pastoral de `,
-        },
-        { texto: defuncion.nombrePastor, negrita: true },
-        { texto: ', para los fines que sus familiares estimen pertinentes.' },
-      ],
+    const objectName = resolverObjectNameCertificado({
+      tipo: 'defunciones',
+      id: defuncion.id,
+      actualizadoEn: defuncion.updatedAt,
+      logoUrl: iglesia.logoUrl,
     });
+
+    const buffer = await this.supabaseStorage.getOrGenerate(CERTIFICADOS_BUCKET, objectName, () =>
+      generarCertificadoPdf({
+        subtitulo: 'DE DEFUNCIÓN',
+        firmaCaption: 'Pastor(a) oficiante',
+        nombrePastor: defuncion.nombrePastor,
+        folio: defuncion.folio,
+        iglesia,
+        parrafo: [
+          {
+            texto: `${iglesia.nombre}, comunidad evangélica congregada en ${defuncion.ciudad}, deja constancia que `,
+          },
+          { texto: defuncion.nombreDifunto, negrita: true },
+          {
+            texto: `, miembro de esta congregación, partió a la presencia del Señor con fecha ${formatearFechaLarga(defuncion.fecha)}, habiendo profesado la fe cristiana evangélica. El presente certificado se extiende en su memoria, bajo el cuidado pastoral de `,
+          },
+          { texto: defuncion.nombrePastor, negrita: true },
+          { texto: ', para los fines que sus familiares estimen pertinentes.' },
+        ],
+      }),
+    );
 
     return { buffer, folio: defuncion.folio };
   }

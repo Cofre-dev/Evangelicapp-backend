@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { memoryStorage, type FileFilterCallback } from 'multer';
+import type { ImageResizeOptions } from '../../supabase/supabase-storage.service';
 
 /**
  * Única fuente de verdad de mimetypes permitidos y su extensión de guardado.
@@ -15,6 +16,9 @@ const MIME_EXTENSIONS: Record<string, string> = {
 };
 
 const MAX_FOTO_SIZE_BYTES = 3 * 1024 * 1024;
+
+/** Mismo criterio que `FOTO_PERFIL_RESIZE`: avatar de tamaño fijo en el censo, recorte por encima de preservar bordes. */
+export const FOTO_INTEGRANTE_RESIZE: ImageResizeOptions = { width: 256, height: 256, fit: 'cover' };
 
 /** Extensión de guardado para el nombre del objeto en Supabase Storage (bucket `fotos-integrantes`). */
 export function resolverExtensionFotoIntegrante(mimetype: string): string {

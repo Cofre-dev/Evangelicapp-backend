@@ -81,8 +81,13 @@ function dibujarCertificado(
     .rect(margenExterior, margenExterior, width - margenExterior * 2, height - margenExterior * 2)
     .stroke(COLOR_BORDE);
 
-  // Folio (arriba izquierda) y fecha de emisión (arriba derecha) — la fecha de emisión no se
-  // persiste, es siempre "hoy": una reimpresión trae la fecha en que se reimprime.
+  // Folio (arriba izquierda) y fecha de emisión (arriba derecha): fecha en que se generó
+  // ESTA versión del PDF. Desde la Fase 3 de docs/supabase.md (caché de certificados en
+  // Supabase Storage, ver `SupabaseStorageService#getOrGenerate`), una reimpresión que pega
+  // en el caché reutiliza el PDF ya generado — la fecha de emisión NO se actualiza en cada
+  // descarga, queda fija en el momento del cacheo. Decisión consciente, confirmada con el
+  // fundador: la fecha real de la ceremonia (ver cuerpo del certificado) es la que importa
+  // legalmente y siempre es correcta; esta es solo metadata administrativa.
   const fechaEmision = formatearFechaLarga(new Date());
   doc
     .font('Helvetica-Bold')

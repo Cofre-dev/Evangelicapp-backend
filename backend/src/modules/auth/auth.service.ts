@@ -14,7 +14,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
-import { resolverExtensionFotoPerfil } from './foto-perfil-upload.config';
+import { FOTO_PERFIL_RESIZE, resolverExtensionFotoPerfil } from './foto-perfil-upload.config';
 import { JwtRefreshPayload } from './strategies/jwt-refresh.strategy';
 
 export type SafeUsuario = Omit<Usuario, 'password'> & {
@@ -223,6 +223,7 @@ export class AuthService {
       'fotos-perfil',
       `${randomUUID()}${resolverExtensionFotoPerfil(foto.mimetype)}`,
       foto,
+      FOTO_PERFIL_RESIZE,
     );
 
     if (usuario.fotoUrl) {

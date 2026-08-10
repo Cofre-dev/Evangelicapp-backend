@@ -3,7 +3,7 @@ import { Rol } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PLAN_LIMITS } from '../../common/constants/plan';
 import { calcularEstadoFacturacion } from '../../common/utils/calcular-facturacion';
-import { resolverExtensionLogo } from '../iglesias/logo-upload.config';
+import { LOGO_RESIZE, resolverExtensionLogo } from '../iglesias/logo-upload.config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { UpdateMiIglesiaDto } from './dto/update-mi-iglesia.dto';
@@ -116,6 +116,7 @@ export class MiIglesiaService {
       'logos-iglesias',
       `${randomUUID()}${resolverExtensionLogo(logo.mimetype)}`,
       logo,
+      LOGO_RESIZE,
     );
 
     if (iglesia.logoUrl) {

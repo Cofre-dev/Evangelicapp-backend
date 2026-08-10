@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { memoryStorage, type FileFilterCallback } from 'multer';
+import type { ImageResizeOptions } from '../../supabase/supabase-storage.service';
 
 /**
  * Única fuente de verdad de mimetypes permitidos y su extensión de guardado.
@@ -20,6 +21,14 @@ const MIME_EXTENSIONS: Record<string, string> = {
 };
 
 const MAX_LOGO_SIZE_BYTES = 2 * 1024 * 1024;
+
+/**
+ * `inside` (no `cover`): un logo no siempre es cuadrado y recortarlo perdería
+ * contenido. El certificado PDF ya lo centra en un círculo de 64×64 vía `fit`
+ * de pdfkit (`certificado-pdf.builder.ts`), así que da igual si el resultado
+ * queda más angosto o más bajo que 512×512.
+ */
+export const LOGO_RESIZE: ImageResizeOptions = { width: 512, height: 512, fit: 'inside' };
 
 /** Extensión de guardado para el nombre del objeto en Supabase Storage (bucket `logos-iglesias`). */
 export function resolverExtensionLogo(mimetype: string): string {
