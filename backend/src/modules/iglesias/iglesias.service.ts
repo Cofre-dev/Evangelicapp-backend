@@ -4,15 +4,19 @@ import * as bcrypt from 'bcrypt';
 import { randomUUID } from 'crypto';
 import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
 import { PLAN_LIMITS } from '../../common/constants/plan';
-import { calcularEstadoFacturacion, sumarUnMes } from '../../common/utils/calcular-facturacion';
+import { calcularEstadoFacturacion, sumarDias, sumarUnMes } from '../../common/utils/calcular-facturacion';
 import { generateTemporaryPassword } from '../../common/utils/generate-temporary-password';
 import { translateUniqueConstraintError } from '../../common/utils/translate-unique-constraint-error';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
+import { AuthService } from '../auth/auth.service';
 import { ActualizarFacturacionDto } from './dto/actualizar-facturacion.dto';
 import { CambiarPlanDto } from './dto/cambiar-plan.dto';
 import { CreateIglesiaDto } from './dto/create-iglesia.dto';
-import { resolverExtensionLogo } from './logo-upload.config';
+import { LOGO_RESIZE, resolverExtensionLogo } from './logo-upload.config';
+
+/** Días entre la fecha de adquisición del plan y la primera facturación (ver CreateIglesiaDto). */
+const DIAS_PRIMERA_FACTURACION = 30;
 
 const DETALLE_SELECT = {
   id: true,
@@ -47,6 +51,7 @@ export class IglesiasService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly supabaseStorage: SupabaseStorageService,
+    private readonly authService: AuthService,
   ) {}
 
   /**
@@ -55,15 +60,23 @@ export class IglesiasService {
    * contraseña temporal se devuelve una sola vez, igual que con el resto del equipo.
    * El logo se sube a Storage antes de abrir la transacción: es una llamada de red,
    * no debe mantener la transacción de Prisma abierta mientras espera.
+   *
+   * `proximaFacturacion` ya no la elige el SuperAdmin a mano: se calcula desde
+   * `fechaAdquisicionPlan` + 30 días. Esa misma fecha queda como el primer registro
+   * del historial de pagos de la iglesia (ver `historialPagos`) — adquirir el plan
+   * es, en los hechos, el primer "pago" confirmado.
    */
-  async create(dto: CreateIglesiaDto, logo?: Express.Multer.File) {
+  async create(dto: CreateIglesiaDto, superAdminId: string, logo?: Express.Multer.File) {
     const temporaryPassword = generateTemporaryPassword();
     const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS);
+    const fechaAdquisicionPlan = new Date(dto.fechaAdquisicionPlan);
+    const proximaFacturacion = sumarDias(fechaAdquisicionPlan, DIAS_PRIMERA_FACTURACION);
     const logoUrl = logo
       ? await this.supabaseStorage.upload(
           'logos-iglesias',
           `${randomUUID()}${resolverExtensionLogo(logo.mimetype)}`,
           logo,
+          LOGO_RESIZE,
         )
       : undefined;
 
@@ -76,7 +89,7 @@ export class IglesiasService {
             region: dto.region,
             direccion: dto.direccion,
             plan: dto.plan,
-            proximaFacturacion: new Date(dto.proximaFacturacion),
+            proximaFacturacion,
             logoUrl,
           },
         });
@@ -94,6 +107,10 @@ export class IglesiasService {
             onboardingCompletado: false,
           },
           select: { id: true, username: true, email: true, nombre: true, apellido: true },
+        });
+
+        await tx.pagoIglesia.create({
+          data: { iglesiaId: iglesia.id, fecha: fechaAdquisicionPlan, registradoPorId: superAdminId },
         });
 
         return { iglesia, pastor };
@@ -129,9 +146,16 @@ export class IglesiasService {
     return this.findOne(id);
   }
 
-  /** Corrección manual de la fecha de facturación (no confundir con `marcarPagada`, que además la avanza). */
-  async actualizarFacturacion(id: string, dto: ActualizarFacturacionDto) {
+  /**
+   * Corrección manual de la fecha de facturación (no confundir con `marcarPagada`, que
+   * además la avanza y queda en el historial). Exige reingresar la contraseña del
+   * SuperAdmin (ver ActualizarFacturacionDto) — cambia cuándo se corta el acceso de una
+   * iglesia por mora, no es una edición trivial. No genera entrada de historial de
+   * pagos: es una corrección de dato, no una confirmación de pago.
+   */
+  async actualizarFacturacion(id: string, dto: ActualizarFacturacionDto, superAdminId: string) {
     await this.requireExists(id);
+    await this.authService.verifyPassword(superAdminId, dto.password);
 
     await this.prisma.iglesia.update({
       where: { id },
@@ -143,10 +167,10 @@ export class IglesiasService {
 
   /**
    * Confirmación manual de pago (no hay pasarela todavía): avanza la fecha de
-   * facturación un mes exacto desde la fecha vencida (no desde "hoy") y reactiva
-   * la iglesia si estaba oculta por mora.
+   * facturación un mes exacto desde la fecha vencida (no desde "hoy"), reactiva la
+   * iglesia si estaba oculta por mora, y deja un registro en el historial de pagos.
    */
-  async marcarPagada(id: string) {
+  async marcarPagada(id: string, superAdminId: string) {
     const iglesia = await this.prisma.iglesia.findUnique({
       where: { id },
       select: { proximaFacturacion: true },
@@ -156,16 +180,39 @@ export class IglesiasService {
       throw new NotFoundException('Iglesia no encontrada');
     }
 
-    await this.prisma.iglesia.update({
-      where: { id },
-      data: {
-        proximaFacturacion: sumarUnMes(iglesia.proximaFacturacion),
-        ultimoPagoAt: new Date(),
-        estado: EstadoIglesia.ACTIVA,
-      },
-    });
+    const fechaPago = new Date();
+
+    await this.prisma.$transaction([
+      this.prisma.iglesia.update({
+        where: { id },
+        data: {
+          proximaFacturacion: sumarUnMes(iglesia.proximaFacturacion),
+          ultimoPagoAt: fechaPago,
+          estado: EstadoIglesia.ACTIVA,
+        },
+      }),
+      this.prisma.pagoIglesia.create({
+        data: { iglesiaId: id, fecha: fechaPago, registradoPorId: superAdminId },
+      }),
+    ]);
 
     return this.findOne(id);
+  }
+
+  /** Historial de pagos/confirmaciones de facturación de la iglesia, más reciente primero. */
+  async historialPagos(id: string) {
+    await this.requireExists(id);
+
+    return this.prisma.pagoIglesia.findMany({
+      where: { iglesiaId: id },
+      orderBy: { fecha: 'desc' },
+      select: {
+        id: true,
+        fecha: true,
+        createdAt: true,
+        registradoPor: { select: { id: true, nombre: true, apellido: true } },
+      },
+    });
   }
 
   /**

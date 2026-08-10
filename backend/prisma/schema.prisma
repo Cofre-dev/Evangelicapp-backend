@@ -142,8 +142,31 @@ model Iglesia {
   defunciones              Defuncion[]
   presentaciones           Presentacion[]
   accesosModulo            AccesoModulo[]
+  pagos                    PagoIglesia[]
 
   @@map("iglesias")
+}
+
+/// Historial de pagos/confirmaciones de facturación: un registro por cada vez que se
+/// confirma que la iglesia pagó (ver IglesiasService#marcarPagada) más uno inicial al
+/// crear la iglesia (la fecha en que adquirió el plan, ver IglesiasService#create).
+/// No guarda monto: el modelo de precios/monetización todavía está sin definir (ver
+/// CLAUDE.md) — agregar el campo cuando exista un valor real que registrar.
+model PagoIglesia {
+  id        String   @id @default(cuid())
+  fecha     DateTime
+  createdAt DateTime @default(now())
+
+  iglesiaId String
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  /// Quién confirmó el pago (SuperAdmin). SetNull si esa cuenta se borra — el
+  /// historial de la iglesia no debe desaparecer con ella.
+  registradoPorId String?
+  registradoPor   Usuario? @relation("PagoIglesiaRegistradoPor", fields: [registradoPorId], references: [id], onDelete: SetNull)
+
+  @@index([iglesiaId, fecha])
+  @@map("pagos_iglesia")
 }
 
 // ==========================================================================
@@ -189,6 +212,7 @@ model Usuario {
   presentacionesCreadas Presentacion[]           @relation("PresentacionCreadoPor")
   accesosPropios        AccesoModulo[]           @relation("AccesosDelUsuario")
   accesosOtorgados      AccesoModulo[]           @relation("AccesosOtorgados")
+  pagosRegistrados      PagoIglesia[]            @relation("PagoIglesiaRegistradoPor")
 
   @@index([iglesiaId])
   @@map("usuarios")

@@ -13,9 +13,11 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Rol } from '@prisma/client';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { ActualizarFacturacionDto } from './dto/actualizar-facturacion.dto';
 import { CambiarPlanDto } from './dto/cambiar-plan.dto';
 import { CreateIglesiaDto } from './dto/create-iglesia.dto';
@@ -30,13 +32,22 @@ export class IglesiasController {
 
   @Post()
   @UseInterceptors(FileInterceptor('logo', logoMulterOptions))
-  create(@Body() dto: CreateIglesiaDto, @UploadedFile() logo?: Express.Multer.File) {
-    return this.iglesiasService.create(dto, logo);
+  create(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: CreateIglesiaDto,
+    @UploadedFile() logo?: Express.Multer.File,
+  ) {
+    return this.iglesiasService.create(dto, user.sub, logo);
   }
 
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.iglesiasService.findOne(id);
+  }
+
+  @Get(':id/historial-pagos')
+  historialPagos(@Param('id') id: string) {
+    return this.iglesiasService.historialPagos(id);
   }
 
   @Patch(':id/plan')
@@ -45,14 +56,18 @@ export class IglesiasController {
   }
 
   @Patch(':id/facturacion')
-  actualizarFacturacion(@Param('id') id: string, @Body() dto: ActualizarFacturacionDto) {
-    return this.iglesiasService.actualizarFacturacion(id, dto);
+  actualizarFacturacion(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Body() dto: ActualizarFacturacionDto,
+  ) {
+    return this.iglesiasService.actualizarFacturacion(id, dto, user.sub);
   }
 
   @Post(':id/marcar-pagada')
   @HttpCode(HttpStatus.OK)
-  marcarPagada(@Param('id') id: string) {
-    return this.iglesiasService.marcarPagada(id);
+  marcarPagada(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.iglesiasService.marcarPagada(id, user.sub);
   }
 
   @Patch(':id/ocultar')

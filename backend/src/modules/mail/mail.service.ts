@@ -10,6 +10,18 @@ interface InvitacionPredicadorParams {
   tokenConfirmacion: string;
 }
 
+interface RecordatorioFacturacionParams {
+  email: string;
+  nombreIglesia: string;
+  proximaFacturacion: Date;
+}
+
+interface FacturacionVencidaParams {
+  email: string;
+  nombreIglesia: string;
+  diasEnMora: number;
+}
+
 interface ConvocatoriaEventoParams {
   email: string;
   tituloEvento: string;
@@ -142,6 +154,70 @@ export class MailService {
       // Mismo criterio que enviarInvitacionPredicador: un fallo de envío individual
       // no debe afectar al resto de la convocatoria ni a la creación del evento.
       this.logger.error(`No se pudo enviar la convocatoria a ${params.email}`, error);
+    }
+  }
+
+  /** Aviso preventivo, 7 días antes del vencimiento (ver FacturacionRecordatoriosCron). */
+  async enviarRecordatorioFacturacion(params: RecordatorioFacturacionParams): Promise<void> {
+    const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    const nombreIglesia = escapeHtml(params.nombreIglesia);
+    const fechaTexto = params.proximaFacturacion.toLocaleDateString('es-CL', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+
+    try {
+      await this.provider.sendMail({
+        to: params.email,
+        subject: `Recordatorio: tu facturación vence en 7 días — ${params.nombreIglesia}`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
+            <h2 style="color: #0369a1;">${nombreIglesia}</h2>
+            <p>Te escribimos para avisarte que la próxima facturación de tu cuenta en EvangelicApp vence el <strong>${fechaTexto}</strong> (en 7 días).</p>
+            <p>No es necesario hacer nada todavía — este es solo un recordatorio para que lo tengas presente.</p>
+            <p style="margin-top: 24px;">
+              <a href="${frontendUrl}" style="background:#38bdf8;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
+                Ir a EvangelicApp
+              </a>
+            </p>
+          </div>
+        `,
+      });
+    } catch (error) {
+      // Best-effort, mismo criterio que el resto de MailService: un correo que no sale
+      // no debe tumbar la corrida del cron para el resto de las iglesias.
+      this.logger.error(`No se pudo enviar el recordatorio de facturación a ${params.email}`, error);
+    }
+  }
+
+  /**
+   * Aviso de mora, enviado día por medio mientras la iglesia no pague (ver
+   * FacturacionRecordatoriosCron) — 1, 3, 5, 7... días vencida, no todos los días.
+   */
+  async enviarFacturacionVencida(params: FacturacionVencidaParams): Promise<void> {
+    const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    const nombreIglesia = escapeHtml(params.nombreIglesia);
+    const diasTexto = params.diasEnMora === 1 ? '1 día' : `${params.diasEnMora} días`;
+
+    try {
+      await this.provider.sendMail({
+        to: params.email,
+        subject: `Tu facturación está vencida — ${params.nombreIglesia}`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
+            <h2 style="color: #dc2626;">${nombreIglesia}</h2>
+            <p>Tu facturación venció hace <strong>${diasTexto}</strong>. Favor ponerte al día lo antes posible para evitar la suspensión del acceso de tu equipo a EvangelicApp.</p>
+            <p style="margin-top: 24px;">
+              <a href="${frontendUrl}" style="background:#dc2626;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
+                Ir a EvangelicApp
+              </a>
+            </p>
+          </div>
+        `,
+      });
+    } catch (error) {
+      this.logger.error(`No se pudo enviar el aviso de facturación vencida a ${params.email}`, error);
     }
   }
 }

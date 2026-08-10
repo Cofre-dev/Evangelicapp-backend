@@ -73,3 +73,8 @@ export function sumarUnMes(fecha: Date): Date {
 
   return new Date(primerDiaMesSiguiente + (Math.min(diaOriginal, diasEnMesSiguiente) - 1) * MS_POR_DIA);
 }
+
+/** Suma `dias` días calendario a `fecha` (medianoche UTC del día resultante). */
+export function sumarDias(fecha: Date, dias: number): Date {
+  return new Date(inicioDiaUtc(fecha) + dias * MS_POR_DIA);
+}

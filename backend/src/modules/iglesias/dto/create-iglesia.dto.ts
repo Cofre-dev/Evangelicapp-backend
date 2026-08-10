@@ -12,9 +12,13 @@ export class CreateIglesiaDto {
   @IsEnum(PlanIglesia)
   plan: PlanIglesia;
 
-  /** Primera fecha de cobro acordada con la iglesia (ISO 8601, ej. "2026-09-05"). */
+  /**
+   * Fecha en que la iglesia adquirió el plan (ISO 8601, ej. "2026-08-10"). La primera
+   * `proximaFacturacion` se calcula sola: esta fecha + 30 días (ver
+   * IglesiasService#create) — el SuperAdmin ya no la elige a mano.
+   */
   @IsDateString()
-  proximaFacturacion: string;
+  fechaAdquisicionPlan: string;
 
   @IsString()
   @IsNotEmpty()

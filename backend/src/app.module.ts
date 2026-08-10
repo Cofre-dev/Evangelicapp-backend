@@ -1,5 +1,6 @@
 import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { CsrfMiddleware } from './common/middleware/csrf.middleware';
 import { RefreshOriginMiddleware } from './common/middleware/refresh-origin.middleware';
 import { AccesosModule } from './modules/accesos/accesos.module';
@@ -20,6 +21,7 @@ import { SupabaseModule } from './supabase/supabase.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
     PrismaModule,
     SupabaseModule,
     AuthModule,
