@@ -1,15 +1,18 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { EstadoIglesia, Prisma, Rol } from '@prisma/client';
+import { EstadoIglesia, EstadoTarea, PlanIglesia, Prisma, Rol } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomUUID } from 'crypto';
 import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
 import { PLAN_LIMITS } from '../../common/constants/plan';
+import { bucketPorMes, inicioVentanaMensual } from '../../common/utils/bucket-por-mes.util';
 import { calcularEstadoFacturacion, sumarDias, sumarUnMes } from '../../common/utils/calcular-facturacion';
 import { generateTemporaryPassword } from '../../common/utils/generate-temporary-password';
 import { translateUniqueConstraintError } from '../../common/utils/translate-unique-constraint-error';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { AuthService } from '../auth/auth.service';
+import { REALTIME_EVENTS } from '../realtime/realtime-rooms.util';
+import { RealtimeService } from '../realtime/realtime.service';
 import { ActualizarFacturacionDto } from './dto/actualizar-facturacion.dto';
 import { CambiarPlanDto } from './dto/cambiar-plan.dto';
 import { CreateIglesiaDto } from './dto/create-iglesia.dto';
@@ -17,6 +20,33 @@ import { LOGO_RESIZE, resolverExtensionLogo } from './logo-upload.config';
 
 /** Días entre la fecha de adquisición del plan y la primera facturación (ver CreateIglesiaDto). */
 const DIAS_PRIMERA_FACTURACION = 30;
+
+const MS_POR_DIA = 24 * 60 * 60 * 1000;
+const MESES_VENTANA_CERTIFICADOS = 6;
+
+export interface FiltrosIglesias {
+  search?: string;
+  estado?: EstadoIglesia;
+  plan?: PlanIglesia;
+  region?: string;
+}
+
+const LISTADO_SELECT = {
+  id: true,
+  nombre: true,
+  comuna: true,
+  region: true,
+  logoUrl: true,
+  estado: true,
+  plan: true,
+  proximaFacturacion: true,
+  createdAt: true,
+  usuarios: {
+    select: { nombre: true, apellido: true, email: true },
+    where: { rol: Rol.MANAGER },
+    take: 1,
+  },
+} as const;
 
 const DETALLE_SELECT = {
   id: true,
@@ -52,6 +82,7 @@ export class IglesiasService {
     private readonly prisma: PrismaService,
     private readonly supabaseStorage: SupabaseStorageService,
     private readonly authService: AuthService,
+    private readonly realtimeService: RealtimeService,
   ) {}
 
   /**
@@ -123,6 +154,52 @@ export class IglesiasService {
   }
 
   /**
+   * Listado filtrable para la página "Iglesias" del SuperAdmin (búsqueda por nombre +
+   * filtros de estado/plan/región). Sin paginación: el volumen de iglesias es bajo y
+   * ningún otro listado del backend pagina hoy — no introducir el patrón solo acá.
+   */
+  async findAll(filtros: FiltrosIglesias) {
+    const where: Prisma.IglesiaWhereInput = {
+      ...(filtros.search ? { nombre: { contains: filtros.search, mode: 'insensitive' } } : {}),
+      ...(filtros.estado ? { estado: filtros.estado } : {}),
+      ...(filtros.plan ? { plan: filtros.plan } : {}),
+      ...(filtros.region ? { region: filtros.region } : {}),
+    };
+
+    const iglesias = await this.prisma.iglesia.findMany({
+      where,
+      select: LISTADO_SELECT,
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return iglesias.map((i) => this.mapListado(i));
+  }
+
+  private mapListado(iglesia: Prisma.IglesiaGetPayload<{ select: typeof LISTADO_SELECT }>) {
+    const { usuarios, proximaFacturacion, ...resto } = iglesia;
+    return {
+      ...resto,
+      pastor: usuarios[0] ?? null,
+      facturacion: calcularEstadoFacturacion(proximaFacturacion),
+    };
+  }
+
+  /**
+   * Fase 5 de docs/supabase.md: avisa al dashboard del SuperAdmin (room
+   * `superadmin`, ver RealtimeGateway) cada vez que cambia el EstadoIglesia o
+   * la proximaFacturacion de una iglesia — los 2 campos que ese dashboard
+   * necesita en vivo. Mismo shape que un item de `findAll` para que el
+   * frontend pueda parchear la fila sin tener que volver a pedir la lista.
+   */
+  private async emitIglesiaActualizada(id: string): Promise<void> {
+    const iglesia = await this.prisma.iglesia.findUnique({ where: { id }, select: LISTADO_SELECT });
+    if (!iglesia) {
+      return;
+    }
+    this.realtimeService.emitASuperAdmin(REALTIME_EVENTS.IGLESIA_ACTUALIZADA, this.mapListado(iglesia));
+  }
+
+  /**
    * Detalle para el SuperAdmin: la iglesia, quién es el manager, el resto del
    * equipo, el semáforo de facturación (ver calcularEstadoFacturacion) y el uso
    * actual contra los topes del plan contratado.
@@ -162,6 +239,7 @@ export class IglesiasService {
       data: { proximaFacturacion: new Date(dto.proximaFacturacion) },
     });
 
+    await this.emitIglesiaActualizada(id);
     return this.findOne(id);
   }
 
@@ -196,6 +274,7 @@ export class IglesiasService {
       }),
     ]);
 
+    await this.emitIglesiaActualizada(id);
     return this.findOne(id);
   }
 
@@ -239,6 +318,7 @@ export class IglesiasService {
 
     await this.prisma.iglesia.update({ where: { id }, data: { estado: EstadoIglesia.SUSPENDIDA } });
 
+    await this.emitIglesiaActualizada(id);
     return this.findOne(id);
   }
 
@@ -248,6 +328,7 @@ export class IglesiasService {
 
     await this.prisma.iglesia.update({ where: { id }, data: { estado: EstadoIglesia.ACTIVA } });
 
+    await this.emitIglesiaActualizada(id);
     return this.findOne(id);
   }
 
@@ -261,15 +342,62 @@ export class IglesiasService {
   private async buildDetalle(iglesia: Prisma.IglesiaGetPayload<{ select: typeof DETALLE_SELECT }>) {
     const { usuarios, plan, proximaFacturacion, ...iglesiaData } = iglesia;
 
-    const departamentosActuales = await this.prisma.departamentoFinanciero.count({
-      where: { iglesiaId: iglesia.id, activo: true },
-    });
+    const iglesiaId = iglesia.id;
+    const ahora = new Date();
+    const hace24h = new Date(ahora.getTime() - MS_POR_DIA);
+    const hace7d = new Date(ahora.getTime() - 7 * MS_POR_DIA);
+    const en30d = new Date(ahora.getTime() + 30 * MS_POR_DIA);
+    const desdeVentanaCertificados = inicioVentanaMensual(MESES_VENTANA_CERTIFICADOS, ahora);
+    const certificadoWhereReciente = { iglesiaId, createdAt: { gte: desdeVentanaCertificados } };
+
+    const [
+      departamentosActuales,
+      usuariosActivosHoy,
+      usuariosActivosSemana,
+      eventosTotal,
+      eventosProximos30d,
+      integrantesTotal,
+      matrimonios,
+      bautizos,
+      defunciones,
+      presentaciones,
+      matrimoniosRecientes,
+      bautizosRecientes,
+      defuncionesRecientes,
+      presentacionesRecientes,
+      notasPendientes,
+    ] = await Promise.all([
+      this.prisma.departamentoFinanciero.count({ where: { iglesiaId, activo: true } }),
+      this.prisma.usuario.count({ where: { iglesiaId, ultimoAccesoAt: { gte: hace24h } } }),
+      this.prisma.usuario.count({ where: { iglesiaId, ultimoAccesoAt: { gte: hace7d } } }),
+      this.prisma.evento.count({ where: { iglesiaId } }),
+      this.prisma.evento.count({ where: { iglesiaId, fechaInicio: { gte: ahora, lte: en30d } } }),
+      this.prisma.integrante.count({ where: { iglesiaId } }),
+      this.prisma.matrimonio.count({ where: { iglesiaId } }),
+      this.prisma.bautizo.count({ where: { iglesiaId } }),
+      this.prisma.defuncion.count({ where: { iglesiaId } }),
+      this.prisma.presentacion.count({ where: { iglesiaId } }),
+      this.prisma.matrimonio.findMany({ where: certificadoWhereReciente, select: { createdAt: true } }),
+      this.prisma.bautizo.findMany({ where: certificadoWhereReciente, select: { createdAt: true } }),
+      this.prisma.defuncion.findMany({ where: certificadoWhereReciente, select: { createdAt: true } }),
+      this.prisma.presentacion.findMany({ where: certificadoWhereReciente, select: { createdAt: true } }),
+      this.prisma.nota.count({
+        where: { iglesiaId, estado: { not: EstadoTarea.COMPLETADA }, archivado: false },
+      }),
+    ]);
 
     const usuariosActuales = usuarios.filter(
       (u) => u.activo && (u.rol === Rol.MANAGER || u.rol === Rol.USUARIO),
     ).length;
 
     const limitesPlan = PLAN_LIMITS[plan];
+
+    const fechasCertificadosRecientes = [
+      ...matrimoniosRecientes,
+      ...bautizosRecientes,
+      ...defuncionesRecientes,
+      ...presentacionesRecientes,
+    ].map((r) => r.createdAt);
 
     return {
       ...iglesiaData,
@@ -283,6 +411,21 @@ export class IglesiasService {
           actuales: departamentosActuales,
           maximo: limitesPlan.maxDepartamentosFinancieros,
         },
+      },
+      // KPIs de adopción/uso para el SuperAdmin — deliberadamente sin nada financiero
+      // (montos, movimientos, categorías): ver CLAUDE.md, el SuperAdmin no ve el detalle
+      // financiero/operativo interno de una iglesia.
+      estadisticas: {
+        usuariosActivosHoy,
+        usuariosActivosSemana,
+        eventos: { total: eventosTotal, proximos30d: eventosProximos30d },
+        integrantesTotal,
+        certificados: {
+          total: matrimonios + bautizos + defunciones + presentaciones,
+          porTipo: { matrimonios, bautizos, defunciones, presentaciones },
+          porMes: bucketPorMes(fechasCertificadosRecientes, MESES_VENTANA_CERTIFICADOS, ahora),
+        },
+        notasPendientes,
       },
     };
   }

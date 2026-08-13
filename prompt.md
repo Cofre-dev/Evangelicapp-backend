@@ -1,124 +1,180 @@
-# Brief para frontend: fecha de adquisición del plan, historial de pagos, confirmación de cambio de facturación y alertas de vencimiento (Fase 4 de docs/supabase.md)
+# Brief para frontend: Realtime (Fase 5 de docs/supabase.md) — dashboard SuperAdmin, evento del Pastor y censo en vivo
 
 ## Resumen
 
-Esta vez sí hay trabajo real para el frontend, en 4 frentes independientes:
+Implementé el canal de WebSocket para las 3 pantallas que "se sienten vivas sin refrescar" que
+planteaba la Fase 5 del plan de Supabase. Una aclaración importante antes de los contratos:
+**esto NO es Supabase Realtime nativo** (`supabase-js` + `.channel(...).on('postgres_changes', ...)`).
+El doc original lo planteaba así, pero eso transmite a cualquier cliente con la anon key
+pública salvo que RLS esté activo filtrando fila por fila — y RLS (Fase 8) todavía no existe.
+Prenderlo hoy habría expuesto eventos/integrantes de cualquier iglesia a cualquier cliente, así
+que en su lugar implementé un WebSocket propio en el backend (Socket.IO sobre NestJS),
+autenticado con el mismo `access_token` que ya usan para todo lo demás. Para ustedes el efecto
+práctico es el mismo (eventos en vivo por pantalla) pero la librería a usar es `socket.io-client`,
+no `supabase-js`, y no hay ningún concepto de Supabase de por medio.
 
-1. **Rompe el formulario de alta de iglesia** — cambió un nombre de campo (obligatorio arreglar).
-2. **Rompe (agrega un requisito a) el cambio de fecha de facturación** — ahora exige contraseña (obligatorio arreglar).
-3. **Historial de pagos** — pantalla/sección nueva a construir (no existía antes).
-4. **Alertas de vencimiento** (modal a 3 días + aviso mientras está vencida) — a construir desde cero, con toda la data que necesitan ya disponible en un endpoint que ya existe.
-
-No pude tocar nada de esto yo mismo: solo tengo acceso a `frontend/src/app/agenda/asistencia` de su repo, el resto de esto vive en las pantallas de SuperAdmin y en el layout autenticado del lado de la iglesia — les dejo el contrato completo y una propuesta de UX para cada punto.
+Como siempre, solo tengo acceso a `frontend/src/app/agenda/asistencia` de su repo — las 3
+pantallas de este brief viven en el dashboard del SuperAdmin, en la pantalla de detalle de
+evento del Pastor y en la pantalla de censo/QR, así que no pude implementar el lado cliente.
 
 ---
 
-## 1. Alta de iglesia (SuperAdmin): `proximaFacturacion` → `fechaAdquisicionPlan`
+## 1. Cómo conectar
 
-**Antes** el SuperAdmin elegía a mano la fecha de la primera facturación. **Ahora** elige la fecha en que la iglesia adquirió el plan, y el backend calcula solo la primera facturación (+30 días).
-
-`POST /iglesias` — body cambia:
-```diff
-- proximaFacturacion: "2026-09-05"
-+ fechaAdquisicionPlan: "2026-08-10"
+```
+npm install socket.io-client
 ```
 
-La respuesta sigue trayendo `iglesia.proximaFacturacion` ya calculada — si quieren mostrarle al SuperAdmin una preview de "próxima facturación: DD/MM" antes de enviar el formulario, pueden calcularlo ustedes mismos en el cliente (`fechaAdquisicionPlan + 30 días`) o simplemente mostrar el valor que vuelve en la respuesta después de crear.
+```ts
+import { io } from 'socket.io-client';
 
-Nada más cambia en ese formulario (resto de los campos, subida de logo, etc. igual que siempre).
-
----
-
-## 2. Cambiar fecha de facturación: ahora exige contraseña
-
-`PATCH /iglesias/:id/facturacion` — body cambia:
-```diff
-{
-  "proximaFacturacion": "2026-09-15",
-+ "password": "la-contraseña-del-superadmin-logueado"
-}
+const socket = io(process.env.NEXT_PUBLIC_API_URL, {
+  withCredentials: true, // manda la cookie access_token igual que sus fetch actuales
+});
 ```
 
-Es el mismo patrón que ya deben tener implementado para borrar certificados de ceremonias (`ConfirmPasswordDto`) — si ya tienen un componente de "modal, pide tu contraseña para confirmar", es reutilizable acá tal cual.
-
-**Respuestas de error a manejar:**
-- Falta el campo o viene vacío → `400`, `{ "message": ["password should not be empty", ...] }`.
-- Contraseña incorrecta → `401`, `{ "message": "Contraseña incorrecta" }`.
-- Contraseña correcta → `200` con la iglesia actualizada, igual que antes.
-
-Recomendación de copy para el modal: algo como *"Vas a cambiar la fecha de facturación de {iglesia} al {nueva fecha}. Ingresa tu contraseña para confirmar."* — no es una acción destructiva, pero sí afecta cuándo se corta el acceso de una iglesia por mora, así que vale la pena que el modal lo explique.
-
----
-
-## 3. Historial de pagos (pantalla nueva)
-
-`GET /iglesias/:id/historial-pagos` (SuperAdmin) — nuevo endpoint. Devuelve un array, más reciente primero:
-
-```json
-[
-  {
-    "id": "cmsm...",
-    "fecha": "2026-08-10T04:35:10.280Z",
-    "createdAt": "2026-08-10T04:35:10.284Z",
-    "registradoPor": { "id": "cmrh...", "nombre": "Admin", "apellido": "Plataforma" }
-  },
-  {
-    "id": "cmsm...",
-    "fecha": "2026-08-10T00:00:00.000Z",
-    "createdAt": "2026-08-10T04:34:38.690Z",
-    "registradoPor": { "id": "cmrh...", "nombre": "Admin", "apellido": "Plataforma" }
-  }
-]
-```
-
-- El **primer registro** (más viejo, al final del array) siempre es la fecha de adquisición del plan.
-- Los siguientes son cada `marcarPagada` (confirmación manual de pago) que se haya hecho.
-- `registradoPor` puede venir `null` si esa cuenta de SuperAdmin ya no existe.
-- No hay monto — el modelo de precios todavía no está definido (ver `CLAUDE.md`), así que no hay un `$` que mostrar todavía. Cuando se defina, este es el lugar natural para agregarlo.
-
-Propuesta de UX: una tabla simple dentro del detalle de la iglesia (donde ya está el semáforo de facturación) — fecha, quién lo registró, nada más por ahora.
+- **Mismo host/puerto que la API REST**, no hace falta una URL ni un puerto distinto — el
+  gateway cuelga del mismo servidor Nest.
+- **Autenticación**: automática vía la cookie httpOnly `access_token` que ya tienen (mismo
+  mecanismo que cualquier request con `credentials: 'include'`). No hace falta pasar ningún
+  token a mano. Si por lo que sea `withCredentials` no manda la cookie en su setup (algunos
+  proxies/entornos), hay un fallback: `io(url, { auth: { token: elAccessToken } })` — pero
+  primero prueben con la cookie, que es el mismo patrón que ya usan en todos lados.
+- **Si no hay sesión válida (sin cookie, o vencida), el servidor corta la conexión de
+  inmediato** (`disconnect` con reason `io server disconnect`) — no hace falta que ustedes
+  verifiquen nada antes de conectar, el servidor rechaza solo.
+- **El access token dura 15 minutos** (como el resto de la API). Si el socket se desconecta a
+  mitad de sesión, la causa más probable es que el token expiró. Socket.IO reconecta solo por
+  defecto (`reconnection: true`), pero reconectará con la MISMA cookie vieja si no se refrescó
+  — les conviene reconectar el socket (`socket.disconnect(); socket.connect();`) después de
+  cada `POST /auth/refresh` exitoso, igual que ya deben estar renovando sesión hoy.
+- **No hay nada que filtrar del lado del cliente.** El servidor decide a qué "room" pertenece
+  cada conexión según el rol/iglesia del JWT — un socket de la iglesia A nunca recibe eventos
+  de la iglesia B, y esto lo garantiza el backend, no ustedes. Solo tienen que escuchar los
+  eventos de abajo.
 
 ---
 
-## 4. Alertas de vencimiento (lado iglesia — Manager)
+## 2. Dashboard SuperAdmin — evento `iglesia:actualizada`
 
-Esto es lo más grande y donde más autonomía de diseño tienen ustedes: la regla de negocio es "avisar 7 días antes por correo (ya lo hace el backend automáticamente, no requiere nada de ustedes), mostrar un modal a los 3 días, y mantener alguna alerta visible mientras esté vencida".
-
-**No hay endpoint nuevo para esto.** `GET /mi-iglesia/facturacion` (que ya deberían estar consumiendo desde el módulo de Facturación que se construyó en agosto) ya trae absolutamente todo lo necesario:
+Se dispara cada vez que cambia el estado o la facturación de **cualquier** iglesia (confirmar
+pago, ocultar/mostrar, corregir fecha de facturación). Mismo shape que un item de
+`GET /iglesias` — pueden usarlo para parchear la fila en la tabla sin volver a pedir la lista
+completa.
 
 ```json
 {
-  "...": "...datos de la iglesia...",
+  "id": "igl_demo",
+  "nombre": "Iglesia Evangélica Demo",
+  "comuna": "Ñuñoa",
+  "region": "Metropolitana",
+  "logoUrl": null,
+  "estado": "ACTIVA",
   "plan": "BASICO",
+  "createdAt": "2026-07-12T00:32:10.519Z",
+  "pastor": { "nombre": "Juan", "apellido": "Pérez", "email": "pastor@demo.cl" },
   "facturacion": {
-    "proximaFacturacion": "2026-08-13T00:00:00.000Z",
-    "diasParaFacturacion": 3,
-    "color": "ROJO",
+    "proximaFacturacion": "2026-10-07T00:00:00.000Z",
+    "diasParaFacturacion": 55,
+    "color": "VERDE",
     "enMora": false,
     "diasEnMora": 0,
     "puedeOcultar": false
-  },
-  "limites": { "...": "..." }
+  }
 }
 ```
 
-- `diasParaFacturacion`: positivo = faltan días; `0` = vence hoy; negativo = días vencida (o usar `diasEnMora`, que ya viene positivo).
-- `color`: `VERDE` / `AMARILLO` (≤7 días) / `ROJO` (≤2 días o vencida) — el semáforo ya existe y probablemente ya lo estén pintando en algún lado del dashboard.
-- `enMora`: booleano, vencida o no.
+Sugerencia: en la tabla de "Iglesias" y en el landing con KPIs, escuchen este evento y hagan
+`setState` sobre la fila con ese `id` (agregarla si no estaba, ej. iglesia recién creada no
+aplica porque `create` no emite este evento — solo las 4 acciones que cambian estado/facturación
+de una ya existente).
 
-**Propuesta concreta (ajústenla a su criterio de UX, esto es solo un punto de partida):**
+---
 
-- **Modal** ("de buena manera", no agresivo): mostrar cuando `facturacion.diasParaFacturacion` está entre `0` y `3` (inclusive) y `enMora` es `false`. Sugerencia: que se pueda cerrar ("Entendido") pero vuelva a aparecer la próxima vez que abran la app (no marcar como "visto para siempre" en localStorage) — la fecha real no cambió, así que el recordatorio sigue siendo válido al día siguiente si no se resolvió.
-  - Copy sugerido: *"Tu próxima facturación es el {fecha}. Para que tu equipo no pierda acceso, recuerda ponerte al día a tiempo."* — con `diasParaFacturacion === 0` cambiar a *"Tu facturación vence hoy."*
-- **Aviso persistente** (banner, no modal — menos intrusivo para algo que puede durar días): mostrar mientras `enMora === true`. Copy sugerido: *"Tu facturación venció hace {diasEnMora} día(s). Ponte al día para evitar que se suspenda el acceso de tu equipo."* — reforzando el mismo mensaje que ya les llega por correo cada 2 días.
-- Ambos son exclusivamos entre sí en la práctica (antes de vencer vs. ya vencida), así que no debería haber conflicto de cuál mostrar.
+## 3. Evento del Pastor — evento `predicador:respondio`
 
-**Los correos ya los manda el backend solo, automáticamente** (recordatorio 7 días antes, y aviso cada 2 días mientras esté vencida) — no hay nada que integrar ahí, es informativo por si quieren que el copy del modal/banner sea consistente con el del correo.
+Se dispara cuando un predicador confirma o rechaza desde el link del email (`GET /agenda/predicadores/:token`,
+público, fuera de su control). Solo llega a los sockets conectados con un usuario de la MISMA
+iglesia del evento.
+
+```json
+{
+  "eventoId": "cmss0mpzk000l6zmideer3oj9",
+  "predicadorId": "cmss0mpzw000n6zmiix24bot2",
+  "nombre": "Predicador Smoke",
+  "email": "predicador-smoke@example.com",
+  "estado": "CONFIRMADO",
+  "respondidoAt": "2026-08-13T21:13:49.387Z"
+}
+```
+
+`estado` es `"CONFIRMADO"` o `"RECHAZADO"`. Sugerencia: en la pantalla de detalle de un evento,
+si `eventoId` coincide con el evento abierto, actualicen el badge de ese predicador sin
+recargar (mismos campos que ya trae `predicadores` en `GET /agenda/eventos/:id`).
+
+---
+
+## 4. Censo en vivo — evento `integrante:registrado`
+
+Se dispara cuando alguien completa el formulario público del QR (`POST /integrantes/registro/:qrToken`)
+y es un integrante NUEVO — si la persona ya existía (mismo email o RUN), no se emite nada (no
+hay "nueva fila" que mostrar). Solo llega a los sockets conectados con un usuario de esa
+iglesia.
+
+```json
+{
+  "id": "cmss0mqnn000p6zmi4fglckd9",
+  "nombreCompleto": "Integrante Smoke Test",
+  "fotoUrl": null,
+  "miembroDesde": "2020-01-01T00:00:00.000Z"
+}
+```
+
+Sugerencia: en la pantalla que abren para ver el QR durante un evento, escuchen este evento y
+agreguen la fila a la lista de "recién censados" a medida que entra gente — ideal para
+proyectar en pantalla durante el evento.
+
+---
+
+## 5. Ejemplo mínimo end-to-end
+
+```ts
+import { io } from 'socket.io-client';
+
+const socket = io(process.env.NEXT_PUBLIC_API_URL, { withCredentials: true });
+
+// Dashboard SuperAdmin
+socket.on('iglesia:actualizada', (iglesia) => {
+  // patch de la fila en la tabla/estado local
+});
+
+// Evento del Pastor
+socket.on('predicador:respondio', (payload) => {
+  // solo aplica si payload.eventoId === eventoAbiertoId
+});
+
+// Censo en vivo
+socket.on('integrante:registrado', (integrante) => {
+  // push a la lista de recién censados
+});
+
+// al desmontar la pantalla
+socket.disconnect();
+```
+
+Un mismo socket puede escuchar los 3 eventos a la vez (no hace falta abrir 3 conexiones) —
+simplemente cada pantalla se suscribe solo al evento que le interesa y lo ignora en las demás
+rutas.
 
 ---
 
 ## Resumen de lo que NO cambió
 
-- El resto de los campos/endpoints de iglesias (plan, ocultar/mostrar, etc.) — sin cambios.
-- `GET /iglesias/:id` (detalle SuperAdmin) — mismo shape que siempre, no incluye el historial (usen el endpoint nuevo aparte).
-- Cualquier otro módulo (agenda, finanzas, ceremonias, integrantes) — sin cambios.
+- Ningún endpoint REST nuevo ni cambio de contrato en los existentes — el WebSocket es un canal
+  adicional, no un reemplazo. `GET /iglesias`, `GET /agenda/eventos/:id`, `GET /integrantes`
+  siguen funcionando exactamente igual para la carga inicial de cada pantalla; el socket solo
+  aporta las actualizaciones en vivo después de esa carga inicial.
+- No hay nada de Supabase involucrado (ni `supabase-js`, ni anon key, ni RLS) — es
+  `socket.io-client` puro contra el propio backend.
+- La autenticación es la misma cookie de siempre — no hay un login ni un token separado para el
+  socket.

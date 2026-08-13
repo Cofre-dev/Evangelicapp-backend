@@ -210,3 +210,189 @@ Esta fase salió más grande que el ítem original del doc — el fundador aprov
 **Cambios:** `prompt.md` reescrito con el brief de la Fase 4 de arriba, en 4 secciones: (1) el rename `proximaFacturacion` → `fechaAdquisicionPlan` en el alta de iglesia, que rompe el formulario actual del SuperAdmin; (2) el nuevo campo `password` obligatorio en `PATCH /iglesias/:id/facturacion`, con los 3 casos de error a manejar; (3) el contrato del nuevo `GET /iglesias/:id/historial-pagos` y una propuesta de tabla simple para mostrarlo; (4) una propuesta concreta de UX para el modal de 3 días y el banner de mora, dejando explícito que no hace falta ningún endpoint nuevo — `GET /mi-iglesia/facturacion` (existente) ya trae todo (`diasParaFacturacion`, `color`, `enMora`, `diasEnMora`).
 
 **Funcionalidad:** a diferencia de los briefs de las Fases 1-3 (mayormente informativos, "no tienen que hacer nada"), esta fase sí requiere trabajo real de UI que yo no puedo hacer (fuera del alcance de mi acceso al repo de frontend) — el brief da el contrato exacto de cada endpoint nuevo/cambiado más una propuesta de copy y de cuándo mostrar cada alerta, para que el equipo de frontend (o una sesión de Claude en ese repo) pueda implementarlo sin tener que adivinar la regla de negocio ni releer el diff del backend.
+
+## [2026-08-11 13:44] KPIs de landing para SuperAdmin y Manager/Usuario + página "Iglesias" + tracking de actividad
+
+Pedido del fundador: que el SuperAdmin vea KPIs (iglesias, usuarios activos, picos de
+actividad, certificados emitidos) apenas entra a la app, con una página aparte para
+navegar/filtrar iglesias y ver su detalle; y que Manager/Usuario tengan su propio landing con
+KPIs de su iglesia y tiempo de uso. Antes de escribir código se le preguntó explícitamente cómo
+medir actividad/tiempo de uso (no existía ningún tracking, solo `RefreshToken`) y cómo definir
+"certificado emitido" — eligió heartbeat ligero desde el frontend y contar registros de
+ceremonias (Matrimonio/Bautizo/Defuncion/Presentacion) respectivamente. El resto de las
+decisiones de diseño (qué KPIs, qué se excluye, cómo particionar los endpoints) quedó a mi
+criterio, documentado abajo.
+
+**Cambios — schema (tracking de actividad):**
+- `prisma/schema.prisma`: nuevo modelo `SesionActividad` (`sesiones_actividad`) —
+  `usuarioId`, `iglesiaId` (null solo para SUPER_ADMIN), `inicioAt`, `ultimoLatidoAt`, `finAt?`.
+  Nuevo campo `Usuario.ultimoAccesoAt` (denormalizado, para que "usuarios activos" sea un
+  `count()` directo). Migración `20260811173324_add_sesion_actividad`.
+- `AuthService#login` abre una `SesionActividad` y setea `ultimoAccesoAt`. Nuevo
+  `AuthService#heartbeat` (usado por `POST /auth/heartbeat`, `204`, sin body) actualiza
+  `ultimoLatidoAt` de la sesión abierta más reciente. `AuthService#refreshTokens` hace el mismo
+  bump best-effort (respaldo si el heartbeat del frontend falla). `AuthService#logout` cierra
+  (`finAt`) las sesiones abiertas del usuario. Una sesión abandonada (se cierra la pestaña sin
+  logout) no se expira a mano — su último latido ya es su fin real de uso, no hacía falta más.
+
+**Cambios — helper compartido:**
+- `common/utils/bucket-por-mes.util.ts` (nuevo): `bucketPorMes`/`inicioVentanaMensual` agrupan
+  fechas en baldes mensuales calendario (UTC), rellenando con 0 los meses sin datos. Usado por
+  los 3 endpoints de abajo que traen series "por mes" — evita triplicar el mismo date-math.
+
+**Cambios — `GET /superadmin/dashboard` (mismo endpoint, payload más rico):**
+- `totales` suma `iglesiasSuspendidas`, `usuariosActivosHoy`/`usuariosActivosSemana` (excluyen
+  SUPER_ADMIN a propósito: miden adopción de iglesias, no uso interno del operador) y
+  `certificadosEmitidos`. `porPlan` nuevo (mismo patrón que `porRegion`, ya existente).
+  `certificados` (por tipo + por mes, 6 meses) y `actividad` (por día 30 días, por hora 0-23
+  agregada, tiempo promedio de sesión) nuevos.
+- El campo `iglesias` (listado completo embebido) se reemplaza por `iglesiasRecientes` (últimas
+  5) — **breaking change**, documentado en el brief de frontend. El listado completo/filtrable
+  se mueve al endpoint nuevo de abajo.
+
+**Cambios — `GET /iglesias` (nuevo) y `GET /iglesias/:id` (enriquecido):**
+- `IglesiasController`/`Service#findAll` (nuevo): listado para la página "Iglesias", filtros
+  `search`/`estado`/`plan`/`region`, sin paginación (mismo criterio que el resto del backend:
+  bajo volumen, no introducir el patrón solo acá).
+- `IglesiasService#buildDetalle` (ya existía) suma un bloque `estadisticas`: usuarios activos,
+  eventos, integrantes, certificados (total/por tipo/por mes) y notas pendientes de esa
+  iglesia. Deliberadamente **sin nada financiero** — el SuperAdmin no ve el detalle
+  financiero/operativo interno de una iglesia (ver `CLAUDE.md`), así que ese bloque no incluye
+  montos ni movimientos, solo counts de adopción/uso.
+
+**Cambios — `GET /dashboard` (módulo nuevo, `src/modules/dashboard/`):**
+- Landing para MANAGER/USUARIO (no existía ninguno) — sin MIEMBRO (sin funcionalidad propia
+  todavía) ni SUPER_ADMIN (tiene el suyo). No vive en `mi-iglesia` porque ese módulo es
+  exclusivo de MANAGER y USUARIO también necesita este landing.
+- Replica la regla de `ModuloAccessGuard` (MANAGER ve todo; USUARIO solo los módulos que tenga
+  otorgados vía Accesos) pero sección por sección en vez de todo-o-nada: cada bloque
+  (`agenda`/`ceremonias`/`integrantes`) viene `null` si no corresponde, en vez de rechazar el
+  endpoint completo. `equipo` (actividad del propio equipo) solo para MANAGER. `personal`
+  (tiempo de uso propio + tareas asignadas) siempre viene, para cualquiera de los dos roles.
+- Finanzas queda deliberadamente fuera: el frontend sigue pegando directo a `GET
+  /finanzas/movimientos/dashboard` (ya existente), que ya se autogestiona el permiso por
+  módulo — duplicar esa lógica acá era innecesario.
+
+**Verificado de punta a punta contra el servidor local (Postgres de Docker) y el seed real:**
+typecheck (`tsc --noEmit`) y lint (`eslint --fix`) limpios. Flujo real con curl: login pastor
+→ cambio de contraseña temporal → heartbeat → `GET /dashboard` (bloques `agenda`/`ceremonias`/
+`integrantes`/`equipo` presentes para MANAGER, `personal.tiempoHoyMinutos` reflejando el
+heartbeat recién hecho) → `GET /finanzas/movimientos/dashboard` sigue funcionando aparte, sin
+tocar. Login SuperAdmin → `GET /superadmin/dashboard` (`usuariosActivosHoy: 1`, excluyendo al
+propio SuperAdmin logueado) → `GET /iglesias` y `GET /iglesias?search=...` (filtro por nombre
+funcionando) → `GET /iglesias/:id` con el bloque `estadisticas` nuevo, confirmado visualmente
+sin ningún campo financiero. Cuenta demo (`jperez`) restaurada a su estado de primer login
+corriendo el seed de nuevo al terminar.
+
+**Funcionalidad:** el SuperAdmin ahora ve, apenas entra, un panorama real de la plataforma
+(cuántas iglesias activas/en mora, cuánta gente la usa, cuántos certificados se emiten, a qué
+horas se usa más) en vez de una pantalla en blanco, más una página dedicada para navegar y
+filtrar iglesias con su detalle de adopción/uso. El Manager y su equipo (Usuario) tienen por
+primera vez un landing con KPIs de su propia iglesia y su tiempo de uso personal, acotado a lo
+que cada uno tiene permitido ver. Nada de esto tiene todavía interfaz — el frontend vive en
+otro repo, ver brief abajo.
+
+## [2026-08-11 13:50] Brief para frontend: dashboards, página "Iglesias" y skills de diseño
+
+**Cambios:** `prompt.md` (raíz del repo) reescrito con el brief completo de arriba: los 2
+comandos para instalar las skills de diseño (`anthropics/skills --skill frontend-design` y
+`vercel-labs/agent-skills --skill web-design-guidelines`) con instrucción explícita de usarlas
+para rediseñar las 3 pantallas nuevas/cambiadas (landing SuperAdmin, página Iglesias, landing
+Manager/Usuario) para que dejen de verse genéricas; el contrato completo (JSON de ejemplo real,
+sacado del smoke test) de cada endpoint nuevo/cambiado con el breaking change de
+`GET /superadmin/dashboard` resaltado; el requisito de comportamiento del heartbeat (cada 60s,
+Page Visibility API, solo pasado el gate de password/onboarding); sugerencias de layout por
+pantalla; y el recordatorio explícito de no agregar nada financiero al detalle de iglesia del
+SuperAdmin aunque el resultado de la skill de diseño lo sugiera.
+
+**Funcionalidad:** el repo de frontend vive aparte (solo tengo acceso a una carpeta puntual,
+`agenda/asistencia`) — este brief le da a quien trabaje ahí (persona o una sesión de Claude en
+ese repo) todo lo necesario para implementar las 3 pantallas y el heartbeat sin tener que leer
+el diff del backend ni adivinar los contratos, las reglas de acceso por módulo o el límite de
+qué puede/no puede mostrarse en cada vista.
+
+## [2026-08-12 13:35] Brief para frontend: notas largas y alerta de mensualidad solo el día del vencimiento
+
+**Cambios:** `prompt.md` (raíz del repo) reescrito con dos pedidos del fundador, ambos sin
+tocar el backend — confirmé que `descripcion` de `Nota` no tiene límite de longitud ni
+validación que bloquee la edición (`create-nota.dto.ts`/`update-nota.dto.ts`), así que el
+overflow de notas largas y el que "no deje editarlas" es un bug de la UI (probablemente el
+mismo botón de editar tapado por el overflow, o el `textarea` de edición truncando el texto
+en el estado). El brief pide: truncar en el listado con "ver más", `textarea` completo en la
+edición, y un confirm simple sí/no antes de editar — explícitamente **sin contraseña** (no
+reusar el patrón de `ConfirmPasswordDto` que se usa para cambiar la fecha de facturación). El
+segundo punto revisa la propuesta de UX del brief anterior (Fase 4, entrada del 2026-08-11):
+el modal de aviso de facturación pasa de dispararse `diasParaFacturacion <= 3` a solo
+`diasParaFacturacion === 0` (el mismo día que vence, no antes) porque el aviso anticipado le
+resultó molesto al usuario final; el banner de mora (`enMora === true`) y la cadencia de
+correos automáticos del cron (`FacturacionRecordatoriosCron`, 7 días antes + cada 2 días en
+mora) quedan sin cambios — el pedido fue explícitamente sobre el aviso in-app.
+
+**Funcionalidad:** ajusta dos fricciones reportadas por el fundador tras usar la plataforma
+con datos reales: notas largas rotas visualmente y sin poder editarse, y una alerta de cobro
+que avisaba con demasiada anticipación y se sentía invasiva. Ninguno de los dos requería
+cambios de backend — el brief documenta el diagnóstico para que el frontend no pierda tiempo
+buscando un endpoint o validación que no existe.
+
+## [2026-08-13 17:30] Fase 5 de docs/supabase.md: Realtime propio (WebSocket) para las 3 pantallas — no Supabase Realtime nativo
+
+Pedido del fundador: implementar la Fase 5 del plan (Realtime en dashboard SuperAdmin,
+pantalla de evento del Pastor y censo en vivo). Antes de escribir código señalé un conflicto
+real con lo que el propio `docs/supabase.md` documentaba: Supabase Realtime nativo
+(`postgres_changes`) transmite a cualquier cliente con la anon key pública salvo que RLS esté
+activo filtrando fila por fila — y RLS (Fase 8) no existe todavía, depende de un claim
+`iglesia_id` en el JWT de Supabase Auth (Fase 7), que tampoco existe. Prender
+`postgres_changes` hoy habría expuesto eventos/integrantes de cualquier iglesia a cualquier
+cliente, rompiendo la garantía de aislamiento multi-tenant que `CLAUDE.md` marca como
+innegociable. Se le presentaron 3 caminos (WebSocket propio, Supabase Realtime limitado a una
+iglesia de prueba, o esperar a las Fases 7-8) y eligió el primero.
+
+**Cambios — dependencias:** `@nestjs/websockets`, `@nestjs/platform-socket.io`, `socket.io`
+(`^10.4.22`/`^4.8.3`, alineadas a la versión de `@nestjs/common` ya instalada).
+
+**Cambios — módulo `src/modules/realtime/` (nuevo):**
+- `realtime.gateway.ts`: un único `WebSocketGateway` (no uno por pantalla) para las 3
+  pantallas. Autentica cada conexión con el MISMO `access_token` (cookie httpOnly) que ya usa
+  el resto de la API — reutiliza `JwtService`/`JWT_ACCESS_SECRET`, mismo secreto que
+  `JwtStrategy`. El scoping por tenant lo decide el servidor, nunca el cliente: en
+  `handleConnection`, si el rol es `SUPER_ADMIN` el socket se une a la room `superadmin`; si
+  tiene `iglesiaId`, se une a `iglesia:{iglesiaId}`. Mismo criterio mínimo que
+  `JwtStrategy.validate()` (usuario activo, iglesia no suspendida) revalidado una sola vez al
+  conectar — un socket que sigue abierto no se corta a mitad de conexión si el usuario se
+  desactiva después (limitación aceptada, documentada en el propio archivo). Cookie leída a
+  mano del header crudo del handshake (`cookie-parser` no engancha ahí), con
+  `handshake.auth.token` como fallback.
+- `realtime.service.ts`: capa fina sobre el `Server` de socket.io (`emitAIglesia`/
+  `emitASuperAdmin`) para que las services de negocio emitan eventos sin importar nada de
+  `@nestjs/websockets` ni conocer el Gateway.
+- `realtime-rooms.util.ts`: nombres de rooms/eventos compartidos.
+- `common/utils/cors-origins.util.ts` (nuevo, extraído de `main.ts`): mismo parseo de
+  `CORS_ORIGIN` reusado por el CORS del gateway.
+
+**Cambios — 3 emisores wireados a las services existentes (nada de lógica de negocio nueva, solo el emit al final):**
+- `IglesiasService`: `iglesia:actualizada` a la room `superadmin` en
+  `marcarPagada`/`ocultar`/`mostrar`/`actualizarFacturacion` — los 4 puntos donde cambia
+  `EstadoIglesia` o `proximaFacturacion`. Payload con el mismo shape que un item de
+  `GET /iglesias` (refactoricé el mapeo de `findAll` a un método compartido `mapListado` para
+  no duplicarlo).
+- `PredicadoresService#responder`: `predicador:respondio` a la room de la iglesia del evento
+  cuando el predicador confirma/rechaza desde el link público del email.
+- `IntegrantesService#registrar`: `integrante:registrado` a la room de la iglesia, solo en el
+  path de creación real (no cuando el registro es un duplicado por email/RUN ya existente).
+
+**Verificado de punta a punta contra el servidor local (Postgres de Docker) con un cliente
+socket.io real:** typecheck y lint limpios. Conexión sin token → rechazada. Conexión con token
+de `admin` (SUPER_ADMIN) y de `jperez` (MANAGER) → aceptadas y persistentes. Con ambos sockets
+conectados en paralelo: `POST /agenda/predicadores/:token/responder` (público) → el socket del
+pastor recibe `predicador:respondio`, el del admin NO recibe nada (confirma que la room
+`iglesia:*` no es visible desde `superadmin`); `POST /integrantes/registro/:qrToken` (público)
+→ el socket del pastor recibe `integrante:registrado`; `POST /iglesias/:id/marcar-pagada` → el
+socket del admin recibe `iglesia:actualizada` con el shape esperado, el del pastor no recibe
+nada. Datos de prueba (evento, predicador, integrante, pago) borrados y cuenta demo (`jperez`)
+restaurada a su estado de primer login corriendo el seed de nuevo al terminar. Encontré y
+maté de paso un proceso `node dist/main` huérfano de una sesión de hace 2 días que seguía
+ocupando el puerto 3001 — no relacionado con este cambio, pero bloqueaba poder probar.
+
+**Pendiente:** el trabajo de frontend (repo aparte, `supabase-js`/`socket.io-client` en las 3
+pantallas) queda fuera de este repo — ver brief en `prompt.md`. Fases 6-8 de
+`docs/supabase.md` (webhook de pagos, Auth, RLS) siguen sin empezar.

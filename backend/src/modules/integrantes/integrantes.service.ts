@@ -5,6 +5,8 @@ import { randomUUID } from 'crypto';
 import { translateUniqueConstraintError } from '../../common/utils/translate-unique-constraint-error';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
+import { REALTIME_EVENTS } from '../realtime/realtime-rooms.util';
+import { RealtimeService } from '../realtime/realtime.service';
 import { RegistrarIntegranteDto } from './dto/registrar-integrante.dto';
 import { FOTO_INTEGRANTE_RESIZE, resolverExtensionFotoIntegrante } from './foto-upload.config';
 
@@ -14,6 +16,7 @@ export class IntegrantesService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly supabaseStorage: SupabaseStorageService,
+    private readonly realtimeService: RealtimeService,
   ) {}
 
   private buildUrlRegistro(qrToken: string): string {
@@ -94,6 +97,15 @@ export class IntegrantesService {
           miembroDesde: new Date(dto.miembroDesde),
           fotoUrl,
         },
+      });
+
+      // Fase 5 de docs/supabase.md: censo en vivo — solo en el path de creación
+      // real (arriba, el de duplicado ya salió con `return` sin llegar acá).
+      this.realtimeService.emitAIglesia(iglesia.id, REALTIME_EVENTS.INTEGRANTE_REGISTRADO, {
+        id: integrante.id,
+        nombreCompleto: integrante.nombreCompleto,
+        fotoUrl: integrante.fotoUrl,
+        miembroDesde: integrante.miembroDesde,
       });
 
       return {

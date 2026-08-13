@@ -143,6 +143,7 @@ model Iglesia {
   presentaciones           Presentacion[]
   accesosModulo            AccesoModulo[]
   pagos                    PagoIglesia[]
+  sesionesActividad        SesionActividad[]
 
   @@map("iglesias")
 }
@@ -196,6 +197,12 @@ model Usuario {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
+  /// Última vez que se vio actividad real del usuario (login, heartbeat o refresh de
+  /// sesión — ver AuthService). Denormalizado a propósito para que "usuarios activos"
+  /// (SuperAdmin y dashboard de manager/usuario) sea un count() directo sin joinear
+  /// contra SesionActividad. Null hasta el primer login tras este cambio.
+  ultimoAccesoAt DateTime?
+
   iglesiaId String?
   iglesia   Iglesia? @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
 
@@ -213,9 +220,38 @@ model Usuario {
   accesosPropios        AccesoModulo[]           @relation("AccesosDelUsuario")
   accesosOtorgados      AccesoModulo[]           @relation("AccesosOtorgados")
   pagosRegistrados      PagoIglesia[]            @relation("PagoIglesiaRegistradoPor")
+  sesionesActividad     SesionActividad[]
 
   @@index([iglesiaId])
+  @@index([iglesiaId, ultimoAccesoAt])
   @@map("usuarios")
+}
+
+/// Tracking de actividad para KPIs (usuarios activos, picos de actividad, tiempo de uso
+/// — ver dashboards de SuperAdmin y de manager/usuario). Una fila por sesión de login:
+/// se abre en AuthService#login, `ultimoLatidoAt` se refresca con cada heartbeat del
+/// frontend (POST /auth/heartbeat, cada ~60s) y con cada refresh de tokens, y se cierra
+/// (`finAt`) en logout explícito. Una sesión abandonada (el usuario cierra la pestaña sin
+/// logout) simplemente deja de recibir heartbeats — no hace falta expirarla a mano, la
+/// duración real de uso ya queda fija en `ultimoLatidoAt`.
+model SesionActividad {
+  id             String    @id @default(cuid())
+  inicioAt       DateTime  @default(now())
+  ultimoLatidoAt DateTime  @default(now())
+  finAt          DateTime?
+
+  usuarioId String
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  /// Null solo para sesiones de SUPER_ADMIN (no pertenece a ninguna iglesia, igual que
+  /// Usuario.iglesiaId). Denormalizado desde Usuario al crear la fila para poder agregar
+  /// actividad por iglesia sin joinear a Usuario en cada query de KPIs.
+  iglesiaId String?
+  iglesia   Iglesia? @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  @@index([usuarioId, inicioAt])
+  @@index([iglesiaId, inicioAt])
+  @@map("sesiones_actividad")
 }
 
 /// Habilita rotación/revocación de refresh tokens (logout real, no solo expiración).

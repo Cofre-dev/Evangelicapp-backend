@@ -119,6 +119,29 @@ export class EventosService {
     await this.prisma.evento.delete({ where: { id } });
   }
 
+  /**
+   * Quién de los Integrantes convocados (ver `notificarIntegrantes`) confirmó, rechazó
+   * o todavía no responde. `findOne` ya valida que el evento pertenezca a `iglesiaId` —
+   * evita que un manager consulte asistencias de otra iglesia adivinando un id de evento.
+   */
+  async findAsistencias(iglesiaId: string, id: string) {
+    await this.findOne(iglesiaId, id);
+
+    const asistencias = await this.prisma.asistenciaEvento.findMany({
+      where: { eventoId: id },
+      include: { integrante: { select: { nombreCompleto: true, email: true } } },
+      orderBy: { integrante: { nombreCompleto: 'asc' } },
+    });
+
+    return asistencias.map((asistencia) => ({
+      integranteId: asistencia.integranteId,
+      nombreCompleto: asistencia.integrante.nombreCompleto,
+      email: asistencia.integrante.email,
+      estado: asistencia.estado,
+      respondidoAt: asistencia.respondidoAt,
+    }));
+  }
+
   private async invitarPredicadores(
     iglesiaId: string,
     evento: { id: string; titulo: string; fechaInicio: Date },

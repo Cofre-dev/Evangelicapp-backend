@@ -90,6 +90,14 @@ export class AuthService {
   async login(usuario: Usuario): Promise<LoginResponse> {
     const tokens = await this.issueTokens(usuario);
 
+    const ahora = new Date();
+    await Promise.all([
+      this.prisma.sesionActividad.create({
+        data: { usuarioId: usuario.id, iglesiaId: usuario.iglesiaId, inicioAt: ahora, ultimoLatidoAt: ahora },
+      }),
+      this.prisma.usuario.update({ where: { id: usuario.id }, data: { ultimoAccesoAt: ahora } }),
+    ]);
+
     return {
       ...tokens,
       usuario: {
@@ -163,14 +171,53 @@ export class AuthService {
       throw new UnauthorizedException('Usuario inválido o inactivo');
     }
 
-    return this.issueTokens(usuario);
+    // Respaldo best-effort del heartbeat (ver ./auth.controller.ts#heartbeat): un refresh
+    // ocurre cada ~15 min mientras la pestaña está abierta, así que igual sirve como señal
+    // de actividad aunque el heartbeat del frontend falle o tarde en desplegarse.
+    const [tokens] = await Promise.all([this.issueTokens(usuario), this.bumpActividad(usuario.id)]);
+    return tokens;
   }
 
   async logout(usuarioId: string): Promise<void> {
-    await this.prisma.refreshToken.updateMany({
-      where: { usuarioId, revoked: false },
-      data: { revoked: true },
+    await Promise.all([
+      this.prisma.refreshToken.updateMany({
+        where: { usuarioId, revoked: false },
+        data: { revoked: true },
+      }),
+      this.prisma.sesionActividad.updateMany({
+        where: { usuarioId, finAt: null },
+        data: { finAt: new Date() },
+      }),
+    ]);
+  }
+
+  /**
+   * Llamado por el frontend cada ~60s (ver POST /auth/heartbeat) mientras la pestaña está
+   * visible, para que `SesionActividad.ultimoLatidoAt` refleje tiempo de uso real (no solo
+   * login/logout). Si no hay sesión abierta (ej. dos pestañas, una ya deslogueada en otra)
+   * no crea una nueva — un heartbeat no es un login.
+   */
+  async heartbeat(usuarioId: string): Promise<void> {
+    await this.bumpActividad(usuarioId);
+  }
+
+  private async bumpActividad(usuarioId: string): Promise<void> {
+    const ahora = new Date();
+    const sesionAbierta = await this.prisma.sesionActividad.findFirst({
+      where: { usuarioId, finAt: null },
+      orderBy: { inicioAt: 'desc' },
+      select: { id: true },
     });
+
+    await Promise.all([
+      this.prisma.usuario.update({ where: { id: usuarioId }, data: { ultimoAccesoAt: ahora } }),
+      sesionAbierta
+        ? this.prisma.sesionActividad.update({
+            where: { id: sesionAbierta.id },
+            data: { ultimoLatidoAt: ahora },
+          })
+        : Promise.resolve(),
+    ]);
   }
 
   /**

@@ -7,12 +7,13 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { Rol } from '@prisma/client';
+import { EstadoIglesia, PlanIglesia, Rol } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -38,6 +39,17 @@ export class IglesiasController {
     @UploadedFile() logo?: Express.Multer.File,
   ) {
     return this.iglesiasService.create(dto, user.sub, logo);
+  }
+
+  /** Listado filtrable para la página "Iglesias" del SuperAdmin — sin paginación (bajo volumen). */
+  @Get()
+  findAll(
+    @Query('search') search?: string,
+    @Query('estado') estado?: EstadoIglesia,
+    @Query('plan') plan?: PlanIglesia,
+    @Query('region') region?: string,
+  ) {
+    return this.iglesiasService.findAll({ search, estado, plan, region });
   }
 
   @Get(':id')

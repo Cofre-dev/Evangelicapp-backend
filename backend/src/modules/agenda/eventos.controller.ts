@@ -46,6 +46,12 @@ export class EventosController {
     return this.eventosService.findOne(this.requireIglesiaId(user), id);
   }
 
+  /** Quién de los Integrantes convocados confirmó, rechazó o sigue sin responder. */
+  @Get(':id/asistencias')
+  findAsistencias(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.eventosService.findAsistencias(this.requireIglesiaId(user), id);
+  }
+
   @Post()
   create(@CurrentUser() user: JwtPayload, @Body() dto: CreateEventoDto) {
     return this.eventosService.create(this.requireIglesiaId(user), user.sub, dto);

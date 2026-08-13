@@ -7,12 +7,14 @@ import { AccesosModule } from './modules/accesos/accesos.module';
 import { AgendaModule } from './modules/agenda/agenda.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CeremoniasModule } from './modules/ceremonias/ceremonias.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { FinanzasModule } from './modules/finanzas/finanzas.module';
 import { IglesiasModule } from './modules/iglesias/iglesias.module';
 import { IntegrantesModule } from './modules/integrantes/integrantes.module';
 import { MiIglesiaModule } from './modules/mi-iglesia/mi-iglesia.module';
 import { NotasModule } from './modules/notas/notas.module';
 import { OnboardingModule } from './modules/onboarding/onboarding.module';
+import { RealtimeModule } from './modules/realtime/realtime.module';
 import { SuperAdminModule } from './modules/super-admin/super-admin.module';
 import { UsuariosModule } from './modules/usuarios/usuarios.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -24,6 +26,7 @@ import { SupabaseModule } from './supabase/supabase.module';
     ScheduleModule.forRoot(),
     PrismaModule,
     SupabaseModule,
+    RealtimeModule,
     AuthModule,
     OnboardingModule,
     UsuariosModule,
@@ -31,6 +34,7 @@ import { SupabaseModule } from './supabase/supabase.module';
     SuperAdminModule,
     IglesiasModule,
     MiIglesiaModule,
+    DashboardModule,
     AgendaModule,
     FinanzasModule,
     NotasModule,

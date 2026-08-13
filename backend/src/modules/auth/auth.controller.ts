@@ -100,6 +100,19 @@ export class AuthController {
     return this.authService.getProfile(user.sub);
   }
 
+  /**
+   * Ping de actividad para KPIs de "usuarios activos"/"tiempo de uso" (dashboards de
+   * SuperAdmin y de manager/usuario). El frontend lo llama cada ~60s mientras la pestaña
+   * está visible (Page Visibility API), una vez pasados los gates de mustChangePassword/
+   * onboarding — ver JwtStrategy#MUST_CHANGE_PASSWORD_ALLOWLIST.
+   */
+  @Post('heartbeat')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  async heartbeat(@CurrentUser() user: JwtPayload): Promise<void> {
+    await this.authService.heartbeat(user.sub);
+  }
+
   /** Autoedición del perfil (cualquier rol). Solo datos personales: nombre, apellido, teléfono. */
   @Patch('me')
   @UseGuards(JwtAuthGuard)
