@@ -1,9 +1,9 @@
-import { IsString, MinLength } from 'class-validator';
+import { IsEmail, IsString, MinLength } from 'class-validator';
 
+/** Fase 7 de docs/supabase.md: login por email (antes username), para alinear con el modelo nativo de Supabase Auth. */
 export class LoginDto {
-  @IsString()
-  @MinLength(1)
-  username: string;
+  @IsEmail()
+  email: string;
 
   @IsString()
   @MinLength(1)

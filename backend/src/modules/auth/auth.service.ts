@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { EstadoIglesia, ModuloSistema, PlanIglesia, Rol, Usuario } from '@prisma/client';
@@ -11,6 +11,7 @@ import { generateCsrfToken } from '../../common/utils/generate-csrf-token';
 import { generateSecureToken } from '../../common/utils/generate-secure-token';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SupabaseAuthService } from '../../supabase/supabase-auth.service';
 import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
@@ -44,23 +45,28 @@ export type PerfilResponse = SafeUsuario & {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
     private readonly supabaseStorage: SupabaseStorageService,
+    private readonly supabaseAuth: SupabaseAuthService,
   ) {}
 
   /**
-   * Usado por LocalStrategy. Mensaje de error genérico para no filtrar si el usuario
+   * Usado por LocalStrategy. Login por `email` (Fase 7 de docs/supabase.md — antes
+   * era por `username`; `username` sigue existiendo en el modelo pero ya no es la
+   * credencial de acceso). Mensaje de error genérico para no filtrar si el usuario
    * existe — pero esa discreción solo aplica ANTES de confirmar la contraseña. Una
    * vez que la contraseña ya es correcta, sí es intencional decirle explícitamente
    * a un usuario de una iglesia en mora por qué no puede entrar (ver
    * IglesiaSuspendidaException) en vez de darle el mismo error genérico.
    */
-  async validateUser(username: string, password: string): Promise<Usuario> {
+  async validateUser(email: string, password: string): Promise<Usuario> {
     const usuario = await this.prisma.usuario.findUnique({
-      where: { username },
+      where: { email },
       include: { iglesia: { select: { estado: true, proximaFacturacion: true } } },
     });
 
@@ -77,6 +83,15 @@ export class AuthService {
       const { diasEnMora } = calcularEstadoFacturacion(usuario.iglesia.proximaFacturacion);
       throw new IglesiaSuspendidaException(diasEnMora);
     }
+
+    // Fase 7 (convivencia temporal): espeja este usuario a Supabase Auth en segundo
+    // plano, sin bloquear ni poder tumbar este login — es la única vez que el
+    // backend tiene el password en texto plano, así que es el único momento
+    // posible para crear el usuario espejo. No-op si ya estaba espejado o si el
+    // proyecto de prueba no está configurado en este entorno (ver SupabaseAuthService).
+    void this.supabaseAuth.mirrorUsuario(usuario, password).catch((error: Error) => {
+      this.logger.warn(`No se pudo espejar el usuario ${usuario.id} a Supabase Auth: ${error.message}`);
+    });
 
     const { iglesia, ...usuarioSinIglesia } = usuario;
     return usuarioSinIglesia;

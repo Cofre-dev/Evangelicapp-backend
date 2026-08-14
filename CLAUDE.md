@@ -12,6 +12,25 @@ EvangelicApp es una plataforma de gestión para iglesias evangélicas de Chile: 
 
 Este repo es **solo el backend**. El frontend (con el que consume esta API) vive en un repositorio aparte, por decisión deliberada de no usar monorepo.
 
+## Estado actual: pre-lanzamiento
+
+**EvangelicApp todavía no está lanzada a producción.** Ninguna iglesia real usa la plataforma
+hoy — todo lo que existe en la base de datos (incluidas "Iglesia Evangélica Demo" y las otras
+2 iglesias del seed) es data de prueba/demo, no una iglesia real operando con datos propios.
+Ha habido demos puntuales (ej. a inversionistas — ver incidente del 2026-08-07 en memoria de
+sesiones anteriores), pero no clientes activos todavía.
+
+**Por qué esto importa para el trabajo en este repo:** varias partes de este documento y de
+`docs/supabase.md` hablan de "iglesias reales" o "usuarios reales" al justificar decisiones de
+cautela (probar en un proyecto de Supabase separado antes de migrar, no romper aislamiento
+multi-tenant, etc.). Esa cautela se mantiene igual — es el objetivo declarado de una
+herramienta seria y duradera a nivel nacional lo que la justifica, no que haya negocios reales
+en riesgo hoy mismo. Pero antes de que exista la primera iglesia real, hay más margen para
+decisiones que después serían mucho más costosas de revertir (cambios de esquema de auth,
+cutover completo a Supabase Auth, activar RLS, etc.) — vale la pena tenerlo presente al decidir
+cuánto esperar antes de avanzar en algo. Actualizar esta sección en cuanto la primera iglesia
+real empiece a operar en la plataforma.
+
 ## Problema que resuelve
 
 Muchas iglesias evangélicas en Chile hoy gestionan esto de forma manual o dispersa: agenda en papel/WhatsApp, finanzas en cuadernos o planillas sueltas sin trazabilidad, coordinación de predicadores por llamadas. EvangelicApp centraliza eso en una sola plataforma pensada para el equipo pastoral (pastor, tesorero, secretaria), con control de acceso por rol y trazabilidad de lo financiero.
@@ -51,7 +70,7 @@ Cuando el usuario entregue esta información, reemplazar esta sección con el mo
 
 Dado el objetivo de que esto persista en el tiempo y tenga impacto nacional:
 
-- **Confiabilidad sobre velocidad**: este software maneja datos financieros y personales de organizaciones religiosas reales; preferir la solución robusta aunque tome más tiempo.
+- **Confiabilidad sobre velocidad**: este software está construido para manejar datos financieros y personales de organizaciones religiosas reales (aunque hoy, pre-lanzamiento, todavía no hay ninguna — ver "Estado actual" arriba); preferir la solución robusta aunque tome más tiempo, pensando en cuando sí los haya.
 - **No romper el aislamiento multi-tenant** bajo ninguna circunstancia — es la garantía de seguridad más importante del sistema (ver patrón `iglesiaId` desde JWT en `README.md`).
 - **Mantener el patrón existente** en vez de introducir uno nuevo por endpoint/módulo — la consistencia importa más que la elegancia local.
 - Antes de agregar una dependencia o reescribir algo grande, confirmar con el usuario — es un proyecto en etapa temprana pero con intención de largo plazo, no un prototipo para tirar.

@@ -203,6 +203,14 @@ model Usuario {
   /// contra SesionActividad. Null hasta el primer login tras este cambio.
   ultimoAccesoAt DateTime?
 
+  /// Fase 7 de docs/supabase.md (convivencia temporal, sin cortar el login propio):
+  /// espejo de este usuario en `auth.users` del proyecto de PRUEBA de Supabase Auth
+  /// (`Backend-auth-test`, no el proyecto real). Null hasta el primer login exitoso
+  /// tras este cambio — AuthService#validateUser lo crea de forma perezosa y
+  /// best-effort en segundo plano (ver SupabaseAuthService#mirrorUsuario). El sistema
+  /// de sesión real (JWT propio, cookies, CSRF) no depende de este campo todavía.
+  supabaseUserId String? @unique
+
   iglesiaId String?
   iglesia   Iglesia? @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
 

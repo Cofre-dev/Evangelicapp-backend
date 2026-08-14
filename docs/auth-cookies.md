@@ -21,7 +21,7 @@ Las tres se setean/rotan juntas en `POST /auth/login` y `POST /auth/refresh`, y 
 ## Contrato de los endpoints
 
 ### `POST /auth/login`
-Body: `{ username, password }` (sin cambios). Respuesta (sin tokens):
+Body: `{ email, password }` (Fase 7 de docs/supabase.md, 2026-08-14: antes era `{ username, password }` — `username` sigue existiendo en el modelo pero dejó de ser la credencial de login). Respuesta (sin tokens):
 ```json
 { "usuario": {...}, "requiresPasswordChange": bool, "requiresOnboarding": bool }
 ```

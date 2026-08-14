@@ -4,14 +4,19 @@ import { Usuario } from '@prisma/client';
 import { Strategy } from 'passport-local';
 import { AuthService } from '../auth.service';
 
-/** Se usa solo en POST /auth/login (vía LocalAuthGuard). Los nombres username/password son los que Passport espera por defecto. */
+/**
+ * Se usa solo en POST /auth/login (vía LocalAuthGuard). `usernameField` es el
+ * nombre que Passport espera por defecto para "el campo identificador" — acá
+ * apunta a `email` (Fase 7 de docs/supabase.md: login por email, no por
+ * username, para alinear con el modelo nativo de Supabase Auth).
+ */
 @Injectable()
 export class LocalStrategy extends PassportStrategy(Strategy) {
   constructor(private readonly authService: AuthService) {
-    super({ usernameField: 'username', passwordField: 'password' });
+    super({ usernameField: 'email', passwordField: 'password' });
   }
 
-  async validate(username: string, password: string): Promise<Usuario> {
-    return this.authService.validateUser(username, password);
+  async validate(email: string, password: string): Promise<Usuario> {
+    return this.authService.validateUser(email, password);
   }
 }

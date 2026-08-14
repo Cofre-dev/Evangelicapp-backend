@@ -5,6 +5,7 @@ import { EstadoIglesia } from '@prisma/client';
 import { Request } from 'express';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ACCESS_TOKEN_COOKIE } from '../../../common/constants/auth-cookies';
+import { MUST_CHANGE_PASSWORD_ALLOWLIST } from '../../../common/constants/must-change-password-allowlist';
 import { IglesiaSuspendidaException } from '../../../common/exceptions/iglesia-suspendida.exception';
 import { calcularEstadoFacturacion } from '../../../common/utils/calcular-facturacion';
 import { JwtPayload } from '../../../common/interfaces/jwt-payload.interface';
@@ -14,20 +15,6 @@ function cookieExtractor(req: Request): string | null {
   const cookies = req.cookies as Record<string, string | undefined> | undefined;
   return cookies?.[ACCESS_TOKEN_COOKIE] ?? null;
 }
-
-/**
- * Rutas alcanzables con `mustChangePassword === true`. Todo lo demás responde 403
- * hasta que el usuario cambie la contraseña temporal — sin esto, `mustChangePassword`
- * era solo una señal advisoria para que el FRONTEND mostrara una pantalla obligatoria,
- * pero un cliente que hablara directo con la API podía seguir usando cualquier
- * endpoint de su rol indefinidamente sin cambiar la contraseña temporal.
- */
-const MUST_CHANGE_PASSWORD_ALLOWLIST: ReadonlySet<string> = new Set([
-  '/auth/change-password',
-  '/auth/logout',
-  '/auth/me',
-  '/onboarding/complete',
-]);
 
 // `onboardingCompletado` (solo MANAGER) se deja sin bloqueo de servidor a propósito por ahora:
 // a diferencia de mustChangePassword, requeriría decidir qué endpoints puede tocar un manager

@@ -1,180 +1,97 @@
-# Brief para frontend: Realtime (Fase 5 de docs/supabase.md) — dashboard SuperAdmin, evento del Pastor y censo en vivo
+# Brief para frontend: login por email (Fase 7 de docs/supabase.md — breaking change)
 
 ## Resumen
 
-Implementé el canal de WebSocket para las 3 pantallas que "se sienten vivas sin refrescar" que
-planteaba la Fase 5 del plan de Supabase. Una aclaración importante antes de los contratos:
-**esto NO es Supabase Realtime nativo** (`supabase-js` + `.channel(...).on('postgres_changes', ...)`).
-El doc original lo planteaba así, pero eso transmite a cualquier cliente con la anon key
-pública salvo que RLS esté activo filtrando fila por fila — y RLS (Fase 8) todavía no existe.
-Prenderlo hoy habría expuesto eventos/integrantes de cualquier iglesia a cualquier cliente, así
-que en su lugar implementé un WebSocket propio en el backend (Socket.IO sobre NestJS),
-autenticado con el mismo `access_token` que ya usan para todo lo demás. Para ustedes el efecto
-práctico es el mismo (eventos en vivo por pantalla) pero la librería a usar es `socket.io-client`,
-no `supabase-js`, y no hay ningún concepto de Supabase de por medio.
+Empecé la Fase 7 del plan de Supabase (reemplazar el login/Auth propio por Supabase Auth). Es
+la fase más grande y riesgosa del plan completo, así que la estoy avanzando en pasos chicos en
+vez de cortar todo de una vez — **este primer paso es 100% backend + 1 cambio puntual y
+obligatorio en el formulario de login del frontend.** El resto de la migración a Supabase Auth
+(cookies, tokens, `supabase-js` en el cliente) todavía no aplica — sigue siendo exactamente el
+mismo flujo de siempre (`POST /auth/login`, cookies httpOnly, `POST /auth/refresh`, etc.),
+excepto por el campo que se manda.
 
-Como siempre, solo tengo acceso a `frontend/src/app/agenda/asistencia` de su repo — las 3
-pantallas de este brief viven en el dashboard del SuperAdmin, en la pantalla de detalle de
-evento del Pastor y en la pantalla de censo/QR, así que no pude implementar el lado cliente.
+Como siempre, solo tengo acceso a `frontend/src/app/agenda/asistencia` de su repo, así que no
+pude hacer este cambio yo mismo — es chico pero **rompe el login si no se actualiza.**
 
 ---
 
-## 1. Cómo conectar
+## El cambio: `POST /auth/login` ahora pide `email`, no `username`
 
-```
-npm install socket.io-client
-```
-
-```ts
-import { io } from 'socket.io-client';
-
-const socket = io(process.env.NEXT_PUBLIC_API_URL, {
-  withCredentials: true, // manda la cookie access_token igual que sus fetch actuales
-});
-```
-
-- **Mismo host/puerto que la API REST**, no hace falta una URL ni un puerto distinto — el
-  gateway cuelga del mismo servidor Nest.
-- **Autenticación**: automática vía la cookie httpOnly `access_token` que ya tienen (mismo
-  mecanismo que cualquier request con `credentials: 'include'`). No hace falta pasar ningún
-  token a mano. Si por lo que sea `withCredentials` no manda la cookie en su setup (algunos
-  proxies/entornos), hay un fallback: `io(url, { auth: { token: elAccessToken } })` — pero
-  primero prueben con la cookie, que es el mismo patrón que ya usan en todos lados.
-- **Si no hay sesión válida (sin cookie, o vencida), el servidor corta la conexión de
-  inmediato** (`disconnect` con reason `io server disconnect`) — no hace falta que ustedes
-  verifiquen nada antes de conectar, el servidor rechaza solo.
-- **El access token dura 15 minutos** (como el resto de la API). Si el socket se desconecta a
-  mitad de sesión, la causa más probable es que el token expiró. Socket.IO reconecta solo por
-  defecto (`reconnection: true`), pero reconectará con la MISMA cookie vieja si no se refrescó
-  — les conviene reconectar el socket (`socket.disconnect(); socket.connect();`) después de
-  cada `POST /auth/refresh` exitoso, igual que ya deben estar renovando sesión hoy.
-- **No hay nada que filtrar del lado del cliente.** El servidor decide a qué "room" pertenece
-  cada conexión según el rol/iglesia del JWT — un socket de la iglesia A nunca recibe eventos
-  de la iglesia B, y esto lo garantiza el backend, no ustedes. Solo tienen que escuchar los
-  eventos de abajo.
-
----
-
-## 2. Dashboard SuperAdmin — evento `iglesia:actualizada`
-
-Se dispara cada vez que cambia el estado o la facturación de **cualquier** iglesia (confirmar
-pago, ocultar/mostrar, corregir fecha de facturación). Mismo shape que un item de
-`GET /iglesias` — pueden usarlo para parchear la fila en la tabla sin volver a pedir la lista
-completa.
-
+**Antes:**
 ```json
-{
-  "id": "igl_demo",
-  "nombre": "Iglesia Evangélica Demo",
-  "comuna": "Ñuñoa",
-  "region": "Metropolitana",
-  "logoUrl": null,
-  "estado": "ACTIVA",
-  "plan": "BASICO",
-  "createdAt": "2026-07-12T00:32:10.519Z",
-  "pastor": { "nombre": "Juan", "apellido": "Pérez", "email": "pastor@demo.cl" },
-  "facturacion": {
-    "proximaFacturacion": "2026-10-07T00:00:00.000Z",
-    "diasParaFacturacion": 55,
-    "color": "VERDE",
-    "enMora": false,
-    "diasEnMora": 0,
-    "puedeOcultar": false
-  }
-}
+{ "username": "jperez", "password": "..." }
 ```
 
-Sugerencia: en la tabla de "Iglesias" y en el landing con KPIs, escuchen este evento y hagan
-`setState` sobre la fila con ese `id` (agregarla si no estaba, ej. iglesia recién creada no
-aplica porque `create` no emite este evento — solo las 4 acciones que cambian estado/facturación
-de una ya existente).
-
----
-
-## 3. Evento del Pastor — evento `predicador:respondio`
-
-Se dispara cuando un predicador confirma o rechaza desde el link del email (`GET /agenda/predicadores/:token`,
-público, fuera de su control). Solo llega a los sockets conectados con un usuario de la MISMA
-iglesia del evento.
-
+**Ahora:**
 ```json
-{
-  "eventoId": "cmss0mpzk000l6zmideer3oj9",
-  "predicadorId": "cmss0mpzw000n6zmiix24bot2",
-  "nombre": "Predicador Smoke",
-  "email": "predicador-smoke@example.com",
-  "estado": "CONFIRMADO",
-  "respondidoAt": "2026-08-13T21:13:49.387Z"
-}
+{ "email": "pastor@demo.cl", "password": "..." }
 ```
 
-`estado` es `"CONFIRMADO"` o `"RECHAZADO"`. Sugerencia: en la pantalla de detalle de un evento,
-si `eventoId` coincide con el evento abierto, actualicen el badge de ese predicador sin
-recargar (mismos campos que ya trae `predicadores` en `GET /agenda/eventos/:id`).
+- El campo se llama `email` y se valida como email (`@IsEmail()`) — no manden el username ahí.
+- **Si el formulario sigue mandando `username`, el login falla con `401 Unauthorized`** (mismo
+  mensaje genérico que "credenciales inválidas" — no hay forma de distinguirlo en el response,
+  así que si después de este cambio empiezan a ver logins fallando en masa, esto es lo primero
+  a revisar).
+- Todo lo demás del formulario de login no cambia: `password` sigue igual, la respuesta sigue
+  trayendo `csrfToken`/`usuario`/`requiresPasswordChange`/`requiresOnboarding` con el mismo
+  shape de siempre, las cookies (`access_token`, `refresh_token`, `csrf_token`) se siguen
+  seteando igual.
+
+**Qué hay que cambiar en la pantalla de login:**
+1. El input que hoy dice "Usuario" (o similar) pasa a pedir el email de la persona. Copy
+   sugerido: *"Correo electrónico"*.
+2. El body del `fetch`/`POST` a `/auth/login` cambia la key de `username` a `email`.
+3. Si tienen algo de autocompletado/validación de formulario del lado del cliente, usen
+   validación de email (`type="email"` alcanza para la mayoría de los casos).
+
+**Por qué el cambio:** es el primer paso hacia Supabase Auth (Fase 7), que autentica
+nativamente por email, no por username. `username` sigue existiendo como campo en el perfil
+del usuario (lo van a seguir viendo en `GET /auth/me`, en la gestión de equipo, etc.) — dejó de
+ser la credencial de login, nada más.
 
 ---
 
-## 4. Censo en vivo — evento `integrante:registrado`
+## Lo que NO cambia (por ahora)
 
-Se dispara cuando alguien completa el formulario público del QR (`POST /integrantes/registro/:qrToken`)
-y es un integrante NUEVO — si la persona ya existía (mismo email o RUN), no se emite nada (no
-hay "nueva fila" que mostrar). Solo llega a los sockets conectados con un usuario de esa
-iglesia.
-
-```json
-{
-  "id": "cmss0mqnn000p6zmi4fglckd9",
-  "nombreCompleto": "Integrante Smoke Test",
-  "fotoUrl": null,
-  "miembroDesde": "2020-01-01T00:00:00.000Z"
-}
-```
-
-Sugerencia: en la pantalla que abren para ver el QR durante un evento, escuchen este evento y
-agreguen la fila a la lista de "recién censados" a medida que entra gente — ideal para
-proyectar en pantalla durante el evento.
+- **Nada de `supabase-js` en el frontend todavía.** El login sigue siendo contra `POST
+  /auth/login` de nuestra propia API, con cookies httpOnly que arma nuestro backend — no hay
+  ningún SDK ni token de Supabase que el frontend tenga que manejar en esta etapa.
+- **Sesión, refresh, logout, CSRF**: sin cambios. `POST /auth/refresh`, `POST /auth/logout`,
+  el header `X-CSRF-Token`, todo igual que hoy.
+- **`GET /auth/me`**: mismo shape de siempre (el `usuario` ahora incluye un campo interno
+  `supabaseUserId` que pueden ignorar completamente — es de uso interno del backend, no tiene
+  ningún uso ni significado del lado del cliente).
+- **Recuperación de contraseña, cambio de contraseña, invitación de equipo**: sin cambios, esos
+  flujos ya eran por email o no dependen del campo de login.
 
 ---
 
-## 5. Ejemplo mínimo end-to-end
+## Qué viene después (todavía no implementado, no hay nada que hacer ahora)
 
-```ts
-import { io } from 'socket.io-client';
+**Actualizado 2026-08-14 — esto reemplaza lo que decía antes en esta sección**, porque ya
+tomé una decisión que cambia el panorama para mejor: **no va a haber un "cambio mucho más
+grande" más adelante.** Originalmente pensaba que reemplazar el login/Auth propio por Supabase
+Auth iba a terminar en que ustedes tuvieran que instalar `supabase-js` en el frontend y cambiar
+cómo manejan la sesión — es lo que Supabase recomienda por defecto (su paquete `@supabase/ssr`).
+Evalué ese patrón y decidí NO adoptarlo: sus cookies recomendadas no son `httpOnly` a propósito
+(legibles por JS), algo que no queremos dado que manejamos datos financieros y personales de
+iglesias, y además asume que el frontend le habla directo al servidor de Auth de Supabase en
+vez de a nuestra API.
 
-const socket = io(process.env.NEXT_PUBLIC_API_URL, { withCredentials: true });
+**Lo que sí va a pasar:** nuestro propio backend va a seguir siendo el único que le habla a
+Supabase Auth por dentro. Ustedes van a seguir hablándole exactamente a la misma API de
+siempre — `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, las mismas 3 cookies
+httpOnly, el mismo header `X-CSRF-Token` — sin instalar ningún SDK de Supabase ni cambiar una
+sola línea de cómo manejan la sesión hoy. **El único cambio para el frontend en toda esta fase,
+pasado y futuro, sigue siendo el de arriba: el campo `email` en vez de `username` en el login.**
+El resto (verificación de tokens, guard de permisos, garantías de rotación de sesión, esquema
+de cookies) es trabajo 100% interno del backend, ya en curso, sin ningún paso pendiente que
+dependa de que ustedes hagan algo.
 
-// Dashboard SuperAdmin
-socket.on('iglesia:actualizada', (iglesia) => {
-  // patch de la fila en la tabla/estado local
-});
-
-// Evento del Pastor
-socket.on('predicador:respondio', (payload) => {
-  // solo aplica si payload.eventoId === eventoAbiertoId
-});
-
-// Censo en vivo
-socket.on('integrante:registrado', (integrante) => {
-  // push a la lista de recién censados
-});
-
-// al desmontar la pantalla
-socket.disconnect();
-```
-
-Un mismo socket puede escuchar los 3 eventos a la vez (no hace falta abrir 3 conexiones) —
-simplemente cada pantalla se suscribe solo al evento que le interesa y lo ignora en las demás
-rutas.
-
----
-
-## Resumen de lo que NO cambió
-
-- Ningún endpoint REST nuevo ni cambio de contrato en los existentes — el WebSocket es un canal
-  adicional, no un reemplazo. `GET /iglesias`, `GET /agenda/eventos/:id`, `GET /integrantes`
-  siguen funcionando exactamente igual para la carga inicial de cada pantalla; el socket solo
-  aporta las actualizaciones en vivo después de esa carga inicial.
-- No hay nada de Supabase involucrado (ni `supabase-js`, ni anon key, ni RLS) — es
-  `socket.io-client` puro contra el propio backend.
-- La autenticación es la misma cookie de siempre — no hay un login ni un token separado para el
-  socket.
+**Nota aparte (2026-08-14):** evalué si convenía cambiar cómo el Pastor da de alta a un
+Tesorero/Secretaria — Supabase ofrece un mecanismo donde le manda un correo directo a la
+persona para que ella misma defina su contraseña, en vez de que el Pastor comparta una
+temporal. Eso sí les tocaría a ustedes (una pantalla nueva para completar la invitación), así
+que decidimos con el fundador dejarlo fuera de esta fase — la pantalla de alta de equipo sigue
+exactamente igual que hoy, sin cambios. Si en algún momento se retoma como mejora de producto
+aparte, les aviso con su propio brief.

@@ -396,3 +396,387 @@ ocupando el puerto 3001 — no relacionado con este cambio, pero bloqueaba poder
 **Pendiente:** el trabajo de frontend (repo aparte, `supabase-js`/`socket.io-client` en las 3
 pantallas) queda fuera de este repo — ver brief en `prompt.md`. Fases 6-8 de
 `docs/supabase.md` (webhook de pagos, Auth, RLS) siguen sin empezar.
+
+## [2026-08-14 01:10] Fase 7 de docs/supabase.md (arranque): login por email + espejo a Supabase Auth en "convivencia temporal"
+
+Pedido del fundador: implementar la Fase 7 (Auth). El propio `docs/supabase.md` la marca como
+la fase de mayor riesgo del plan completo (XL, Alto riesgo) — toca el login y las sesiones de
+iglesias reales que ya usan la plataforma. Antes de escribir código le presenté 3 decisiones
+abiertas que el doc dejaba sin resolver y confirmó:
+
+1. **Migración de usuarios existentes:** convivencia temporal de ambos sistemas (no reset
+   forzado de contraseñas, no migrar solo una iglesia de prueba).
+2. **Login:** pasar de `username` a `email` (alineado con el modelo nativo de Supabase Auth).
+3. **Entorno de prueba:** proyecto de Supabase nuevo y desechable, no un branch del proyecto
+   real ni probar directo contra producción.
+
+**Alcance de esta entrada — deliberadamente conservador:** de los 9 pasos que
+`docs/supabase.md` listaba para la Fase 7, esta entrada cubre la base segura (mapeo de
+usuarios + login por email + mecanismo de espejo) sin tocar todavía la emisión de sesión real
+(`JwtStrategy`/`LocalStrategy` siguen siendo el JWT/bcrypt propio de siempre — Supabase Auth
+NO emite ni valida ninguna sesión todavía). Cortar la sesión real a Supabase Auth
+(`JwtStrategy` completo, cookies/CSRF, `AccesoModulo` como custom claim, invitaciones) es un
+paso posterior y separado, a confirmar explícitamente antes de tocarlo — consistente con la
+recomendación del propio doc de no migrar en caliente sin haber probado de punta a punta.
+
+**Cambios — proyecto de Supabase de prueba:**
+- Proyecto nuevo `Backend-auth-test` (`grcywqjcqwpbuekqbupj`, `ca-central-1`, org
+  `EvangelicApp`), creado vía MCP, costo confirmado en $0/mes. Completamente aislado del
+  proyecto real (`Backend`, `lkcgiqmgdefhxhckedga`) que ya tiene datos reales de iglesias vía
+  Storage — nunca comparten credenciales.
+
+**Cambios — schema:**
+- `Usuario.supabaseUserId String? @unique` (nullable): null hasta el primer login exitoso de
+  ese usuario tras este cambio. Migración `20260814050100_add_supabase_user_id_to_usuario`.
+
+**Cambios — `src/supabase/supabase-auth.service.ts` (nuevo):**
+- Cliente de Supabase separado (`SUPABASE_AUTH_TEST_URL`/`SUPABASE_AUTH_TEST_SERVICE_ROLE_KEY`,
+  **opcionales** a propósito) apuntando SOLO al proyecto de prueba — nunca al de Storage.
+  Sin esas variables configuradas, el servicio es un no-op silencioso (log de warning al
+  arrancar): cualquiera en el equipo puede seguir corriendo el backend local sin tener que dar
+  de alta una cuenta de prueba de Supabase Auth solo para levantar el server.
+- `mirrorUsuario(usuario, password)`: crea el usuario en `auth.users` del proyecto de prueba
+  (`admin.createUser`, con `usuarioId`/`rol`/`iglesiaId` como `app_metadata`) y guarda el
+  `supabaseUserId` devuelto. No-op si ya estaba espejado.
+
+**Cambios — login por email:**
+- `LoginDto`: `username` → `email` (`@IsEmail()`). `LocalStrategy`: `usernameField: 'email'`.
+  `AuthService#validateUser` ahora busca por `email`, no por `username` (`username` sigue
+  existiendo en el modelo — display/creación de cuentas — pero deja de ser la credencial de
+  login). **Breaking change para el frontend**, ver brief en `prompt.md`.
+- `AuthService#validateUser`, justo después de confirmar la contraseña y de que la iglesia no
+  esté suspendida (mismo punto, y único punto, donde el backend tiene el password en texto
+  plano): dispara `supabaseAuth.mirrorUsuario(...)` sin `await` (fire-and-forget, con
+  `.catch` que solo loguea) — un fallo del espejo no puede tumbar ni enlentecer un login real
+  bajo ninguna circunstancia.
+
+**Verificado contra el servidor local (Postgres de Docker):** typecheck y lint limpios.
+`POST /auth/login` con `{ email, password }` → 200, cookies seteadas igual que siempre,
+`supabaseUserId: null` en la respuesta (proyecto de prueba todavía sin configurar en este
+entorno — confirma el no-op seguro). `POST /auth/login` con el body viejo (`{ username,
+password }`) → 401, igual que credenciales inválidas — importante para el frontend, no es un
+400 de validación porque Passport intercepta antes que el ValidationPipe.
+
+**Verificación end-to-end del espejo, ya cerrada:** el fundador pasó la `service_role key` de
+`Backend-auth-test` (no se puede obtener vía MCP — por diseño, solo expone keys públicas).
+Con `SUPABASE_AUTH_TEST_URL`/`SUPABASE_AUTH_TEST_SERVICE_ROLE_KEY` configuradas: login real de
+`jperez` (`pastor@demo.cl`) → `supabaseUserId` se persiste en la fila de `Usuario` (confirmado
+por Prisma) y aparece en `auth.users` del proyecto de prueba con `app_metadata` correcto
+(`rol: MANAGER`, `iglesiaId: igl_demo`, `usuarioId` apuntando de vuelta a nuestra fila,
+`email_confirmed_at` seteado). Un segundo login del mismo usuario confirmó la idempotencia:
+sigue habiendo una sola fila en `auth.users` para ese email, no se duplica.
+
+**Pendiente de esta misma fase:**
+- Pasos 3-9 del plan original de Fase 7 (reemplazar `JwtStrategy` de verdad, guard de
+  `activo`/`SUSPENDIDA`/`mustChangePassword`, `AccesoModulo` como custom claim, rotación de
+  refresh tokens, cookies/CSRF vía Supabase, invitaciones, frontend con `supabase-js`) — sin
+  empezar, a la espera de que esta base (mapeo + espejo, ya validada de punta a punta) reciba
+  el visto bueno para seguir avanzando.
+- Fase 6 (webhook de pagos) sigue bloqueada — modelo de negocio pendiente. Fase 8 (RLS) sigue
+  dependiendo de que la Fase 7 se termine de verdad, no solo de esta base.
+
+## [2026-08-14 01:35] Corrección de documentación: el proyecto está pre-lanzamiento, sin iglesias reales todavía
+
+El fundador notó que `CLAUDE.md` y `docs/supabase.md` daban a entender, en varios lugares, que
+ya había iglesias reales usando la plataforma (lenguaje como "usuarios reales", "iglesias que
+ya usan la plataforma", justificando cautela en Fases 5 y 7). Confirmó explícitamente: **el
+proyecto está en pre-lanzamiento total** — ninguna iglesia real lo usa hoy, todo lo que existe
+en la base (incluida "Iglesia Evangélica Demo" y las otras 2 del seed) es data de prueba. Ha
+habido demos puntuales (ej. a inversionistas) pero no clientes activos.
+
+**Cambios — `CLAUDE.md`:** nueva sección "Estado actual: pre-lanzamiento" (entre "Qué es" y
+"Problema que resuelve") explicando esto y por qué la cautela de ingeniería se mantiene igual
+(el objetivo de largo plazo, no un riesgo de negocio actual). Ajustada la frase de
+"Confiabilidad sobre velocidad" para no afirmar en presente algo que todavía no es cierto.
+
+**Cambios — `docs/supabase.md`:** nota de estado agregada al inicio, apuntando a la sección
+nueva de `CLAUDE.md`. Los 2 bloqueadores ya resueltos (MCP sin autenticar, proyecto pausado)
+quedaron marcados como tal en vez de seguir listados como pendientes. Las recomendaciones de
+Fase 5 y Fase 7 que hablaban de "iglesias reales"/"usuarios reales de una iglesia" se
+corrigieron para reflejar que hoy no hay ninguna en riesgo, sin perder la disciplina de
+cautela pensando en cuando sí las haya.
+
+**Funcionalidad:** documentación desactualizada sobre algo tan básico como "¿hay clientes
+reales hoy?" puede llevar a sobre-cautela innecesaria (o, peor, a asumir mal lo contrario) en
+decisiones futuras — especialmente relevante ahora que la Fase 7 (Auth) sigue en curso y las
+próximas decisiones (cutover de sesión, RLS) son justamente las que más se benefician de saber
+con certeza si hay o no datos reales de por medio.
+
+## [2026-08-14 01:35] Fase 7, paso 3: verificación de JWT de Supabase Auth (infraestructura aislada, sin cortar el login todavía)
+
+El fundador confirmó avanzar con los pasos 3-9 de la Fase 7 (dejando la pasarela de pagos,
+Fase 6, para el final) y pidió ir de a un paso a la vez, con autorización explícita entre
+cada uno — sensato incluso sabiendo que el proyecto está pre-lanzamiento (ver entrada
+anterior), porque el corte final sigue necesitando coordinación con el frontend.
+
+**Decisión de secuenciación:** a diferencia de Fases 1-5 (aditivas), los pasos 3-9 son un solo
+cambio grande y acoplado — no se puede "cortar" el login real (paso 3 del doc) sin haber
+resuelto antes las validaciones por-request (paso 4) y el resto. Cada paso de aquí en adelante
+se construye como infraestructura que corre en paralelo al sistema actual, sin tocar el login
+real ni ningún guard activo, hasta que todo esté listo para un corte final explícito
+(coordinado con el frontend).
+
+**Este paso — verificar un JWT emitido por Supabase Auth:**
+- Confirmé contra `/auth/v1/.well-known/jwks.json` del proyecto de prueba que usa signing keys
+  asimétricas (ES256) — la documentación de Supabase recomienda verificar vía JWKS con una
+  librería como `jose` en ese caso (y explícitamente desaconseja verificar a mano con un
+  secreto compartido en el modelo legacy HS256, que acá no aplica).
+- Nueva dependencia: `jose` (recomendada por la propia documentación de Supabase para esto).
+- `src/supabase/supabase-jwt-verifier.service.ts` (nuevo): `verifyAccessToken(token)` verifica
+  firma/expiración/issuer vía JWKS remoto (cacheado, sin round-trip a Supabase en cada
+  verificación) y resuelve el token de vuelta a nuestra fila de `Usuario` vía
+  `app_metadata.usuarioId` (el mismo claim que deja `SupabaseAuthService#mirrorUsuario`).
+  Revalida además que el `rol` embebido en el token siga coincidiendo con el de la fila actual
+  — si no, rechaza (más seguro que confiar en un claim potencialmente desactualizado).
+  Deliberadamente NO revalida `activo`/`SUSPENDIDA`/`mustChangePassword` — eso es el paso 4,
+  a propósito, para que este servicio haga una sola cosa.
+- **Nada lo usa todavía** — no está conectado a `JwtAuthGuard` ni a ninguna ruta real. Es
+  infraestructura inerte, cero riesgo para el login actual.
+
+**Verificado con un script standalone contra el proyecto de prueba real** (obtuve un access
+token real vía `POST /auth/v1/token?grant_type=password` con las credenciales ya espejadas de
+`jperez`): token válido → resuelve correctamente al usuario correcto; firma alterada →
+rechazado; payload alterado (intento de hacerse pasar por otro usuario cambiando
+`usuarioId`) → rechazado (invalida la firma); basura/no-JWT → rechazado. Gate completo
+(lint:ci, build, test, migrate status) verde. No se agregó un spec de Jest para este servicio
+todavía — testearlo en aislamiento requeriría poder inyectar un JWKS falso en vez del remoto
+real, y prefiero decidir esa forma final una vez que el paso 4 defina cómo se integra de
+verdad, en vez de comprometerme a una interfaz ahora para después tener que cambiarla.
+
+**Pendiente:** paso 4 (guard propio con las 3 validaciones por-request) es el siguiente,
+a la espera de autorización.
+
+## [2026-08-14 01:43] Fase 7, paso 4: guard propio con las 3 validaciones por-request (todavía inerte, sin cortar el login)
+
+**Cambios:**
+- `src/common/constants/must-change-password-allowlist.ts` (nuevo): `MUST_CHANGE_PASSWORD_ALLOWLIST`
+  se extrajo de `jwt.strategy.ts` a este archivo compartido, para que tanto la estrategia JWT
+  actual como el guard nuevo usen exactamente la misma lista en vez de arriesgarse a que
+  diverjan con el tiempo.
+- `src/common/guards/supabase-jwt-auth.guard.ts` (nuevo): `SupabaseJwtAuthGuard` reimplementa,
+  sobre un token de Supabase Auth (verificado con `SupabaseJwtVerifierService` del paso 3) en
+  vez del JWT propio, las mismas 3 revalidaciones por-request que hace hoy
+  `JwtStrategy.validate()`: `activo`, `iglesia.estado === SUSPENDIDA` (con el mismo
+  `IglesiaSuspendidaException`/`diasEnMora`), y el allowlist de `mustChangePassword`. Extrae el
+  token de `Authorization: Bearer`, no de una cookie — el esquema de cookies/CSRF definitivo
+  para Supabase Auth es el paso 7, todavía sin decidir, y usar Bearer acá evita presumir esa
+  respuesta.
+- `modulos` queda `[]` a propósito en el payload que arma el guard: de dónde salen los módulos
+  delegados (`AccesoModulo`) con Supabase Auth es la decisión del paso 5, todavía sin tomar.
+- **Sigue sin estar conectado a ninguna ruta real** — ningún controller usa `SupabaseJwtAuthGuard`
+  todavía. `JwtAuthGuard`/`JwtStrategy` (JWT propio) siguen siendo la única puerta de entrada
+  real; el login actual no cambia en absoluto con este paso.
+
+**Funcionalidad:** deja lista la pieza que le faltaba al paso 3 para que verificar un token de
+Supabase Auth sea equivalente en seguridad al sistema actual — sin este guard, un token de
+Supabase válido pero de un usuario desactivado, de una iglesia suspendida, o que todavía debe
+cambiar su contraseña temporal, habría pasado igual. Con paso 3 + paso 4 juntos, ya existe (en
+paralelo, sin activar) toda la infraestructura necesaria para autenticar una request con
+Supabase Auth con las mismas garantías que hoy.
+
+**Gate verificado:** `lint:ci` limpio, `build` (`nest build`) sin errores, `test` (18/18,
+4 suites) verde, `prisma migrate status` con el schema al día (13 migraciones, sin drift). No
+se agregó spec de Jest para el guard todavía — sigue sin estar conectado a ninguna ruta, y
+mismo razonamiento que en el paso 3: prefiero fijar la forma final de los tests una vez que el
+paso 5 (módulos delegados) decida qué va en el payload, en vez de comprometerme a una interfaz
+de test ahora para después tener que rehacerla.
+
+**Pendiente:** paso 5 (de dónde salen los módulos delegados — `AccesoModulo` — con Supabase
+Auth: Custom Access Token Hook vs. seguir consultando `getModulosOtorgados` en cada request) es
+el siguiente, a la espera de autorización.
+
+## [2026-08-14 02:05] Fase 7, paso 5: módulos delegados (`AccesoModulo`) resueltos en el guard, sin Custom Access Token Hook
+
+**Decisión:** entre las dos opciones que planteaba `docs/supabase.md` (Custom Access Token
+Hook del lado de Supabase vs. seguir consultando `getModulosOtorgados` por request), se
+descartó el Hook — exigiría desplegar y mantener una función Postgres nueva en el proyecto de
+prueba de Supabase, y el resultado sería estrictamente peor: un Hook solo refresca el claim
+`modulos` al emitir/refrescar el token (misma "ventana acotada" de hasta 15 min que ya existe
+hoy, documentada en `JwtStrategy`), mientras que resolverlo en el guard da el módulo al día en
+cada request — y sin costo extra, porque el guard ya paga una query por request para
+`activo`/`iglesia`.
+
+**Cambios:**
+- `src/common/guards/supabase-jwt-auth.guard.ts`: la misma query que ya hacía el guard para
+  `activo`/`iglesia`/`mustChangePassword` ahora también trae `accesosPropios` (relación
+  `AccesoModulo` del usuario) — ninguna query adicional. `modulos` del payload queda igual que
+  `AuthService#getModulosOtorgados`: solo tiene contenido para `Rol.USUARIO`, `[]` para el
+  resto de los roles (MANAGER tiene acceso total por rol, no por lista delegada; SUPER_ADMIN/
+  MIEMBRO no usan estos módulos).
+- **Sigue sin estar conectado a ninguna ruta real** — mismo estado inerte que los pasos 3-4.
+
+**Funcionalidad:** con esto, la infraestructura en paralelo para Supabase Auth (pasos 3-5)
+queda funcionalmente completa en cuanto a "qué puede hacer esta persona" — replica las 3
+revalidaciones de `JwtStrategy` más el claim de módulos delegados, con una garantía de
+frescura igual o mejor que el sistema actual, sin agregar infraestructura nueva del lado de
+Supabase.
+
+**Gate verificado:** `lint:ci` limpio, `build` sin errores, `test` (18/18, 4 suites) verde vía
+`npx jest --runInBand` (el run normal con workers paralelos falló por OOM — no es una
+regresión de este cambio, sino memoria agotada por la cantidad de procesos `node` ya corriendo
+en la máquina; con `--runInBand` corre limpio), `prisma migrate status` sin drift (13
+migraciones, sin cambio de schema en este paso). Sigue sin spec de Jest dedicado — mismo
+razonamiento que pasos 3-4: se fija la interfaz de test recién cuando el guard se conecte a
+una ruta real.
+
+**Pendiente:** paso 6 (garantía de rotación + detección de reuso de refresh tokens equivalente
+a `AuthService#refreshTokens`) es el siguiente, a la espera de autorización.
+
+## [2026-08-14 02:25] Fase 7, paso 6: confirmado — Supabase Auth da una garantía equivalente (y en un aspecto, más segura) que `AuthService#refreshTokens`, con un cambio de comportamiento consciente
+
+Paso puramente de investigación/decisión — sin código, porque la garantía la da el servidor
+de Supabase Auth, no algo que este backend deba construir. Verificado contra la documentación
+oficial (`supabase.com/docs/guides/auth/sessions`, vía `mcp__supabase__search_docs`, no de
+memoria) en vez de asumirlo.
+
+**Lo que hace hoy `AuthService#refreshTokens` (línea base a igualar):**
+- Rotación: cada refresh consume el token (fila `revoked: true` vía `updateMany` atómico y
+  condicional) y emite uno nuevo — un token usado dos veces en dos requests simultáneas solo
+  deja ganar a una (race-safe).
+- Detección de reuso: si se presenta un token que YA estaba `revoked`, se interpreta como robo
+  y se revocan **todas** las refresh tokens activas del usuario — todos sus dispositivos
+  quedan deslogueados, no solo el que reusó el token.
+
+**Lo que confirma la documentación de Supabase Auth:**
+- Rotación de un solo uso es el comportamiento *por defecto*, no opt-in: "a refresh token can
+  only be used once... You can exchange a refresh token only once to get a new access and
+  refresh token pair."
+- Detección de reuso también es nativa y default-on (desactivable en Advanced Settings, pero
+  "generally not recommended" — ni siquiera lo consideré). Dos excepciones deliberadas antes de
+  declarar robo: (a) ventana de gracia de 10s para reuso legítimo (SSR, retries), y (b) si se
+  reintenta el *padre* del token actualmente activo (típico de una respuesta de red perdida
+  después de una rotación exitosa), devuelve el token activo en vez de terminar la sesión — esto
+  es estrictamente más robusto que nuestro código actual: hoy, si un cliente rota exitosamente
+  pero pierde la respuesta HTTP y reintenta con el token viejo, nuestro `refreshTokens` lo trata
+  como reuso real y desloguea TODOS los dispositivos del usuario — un falso positivo que
+  Supabase evita explícitamente.
+- Detección de reuso está **scoped a la sesión** (una sesión = un sign-in = un dispositivo,
+  `auth.sessions`, con su propio `session_id` en el JWT), no a la cuenta completa: "the whole
+  session is regarded as terminated and all refresh tokens belonging to it are marked as
+  revoked". Por defecto un usuario puede tener sesiones ilimitadas en dispositivos distintos, y
+  detectar robo en una de ellas **no** termina las demás.
+
+**Decisión — aceptar el comportamiento nativo de Supabase, con este cambio consciente
+documentado:** hoy, robo detectado en un dispositivo desloguea todos los dispositivos del
+usuario (a propósito — "ante la duda, se cierra la sesión en todos los dispositivos"); con
+Supabase Auth, robo detectado en un dispositivo solo termina esa sesión puntual, dejando las
+demás intactas. Es un cambio de postura de seguridad (blast radius menor por defecto) que
+considero aceptable — y en el caso de falso positivo por red, superior a lo que hay hoy — pero
+es una decisión de producto, no solo técnica, así que queda anotada acá explícitamente en vez
+de asumida en silencio. Si más adelante se quisiera replicar el "todos los dispositivos fuera"
+de hoy, existe `supabase.auth.admin.signOut(userId, scope: 'global')` del lado admin para
+igualarlo — no se implementa todavía porque nada llama login/logout real contra Supabase Auth
+aún (sigue en modo espejo).
+
+No hay features Pro-only involucradas en esta garantía base (time-boxed sessions, inactivity
+timeout, single-session-per-user sí son Pro-only, pero son controles opcionales aparte — no
+hacen falta para igualar la garantía de rotación + reuso que ya tenemos).
+
+**Pendiente:** paso 7 (esquema de cookies/CSRF para Supabase Auth: httpOnly + double-submit
+propio de hoy vs. patrón recomendado por `@supabase/ssr`) es el siguiente, a la espera de
+autorización.
+
+## [2026-08-14 02:50] Fase 7, paso 7: decidido — NO se adopta `@supabase/ssr`, se mantiene el esquema de cookies httpOnly + CSRF double-submit propio
+
+Paso de investigación/decisión — sin código (nada cambia en `cookies.ts`/`csrf.middleware.ts`
+hoy; la decisión aplica cuando se implemente el cutover real, todavía sin autorizar). Verificado
+contra la documentación oficial (`supabase.com/docs/guides/auth/server-side/*`, vía
+`mcp__supabase__search_docs`).
+
+**Lo que confirma la documentación de `@supabase/ssr`:**
+- Las cookies del patrón recomendado **no son `httpOnly`, a propósito**: la propia documentación
+  de Supabase responde "¿cómo hago las cookies HttpOnly?" con "no es necesario — tanto el access
+  token como el refresh token están pensados para viajar a distintos componentes de tu app, y el
+  lado browser de tu app necesita acceso al refresh token de todas formas". Es decir, el modelo
+  de Supabase acepta a propósito que el refresh token sea legible por JS.
+- El patrón asume que **el frontend (Next.js) habla directo con el servidor de Auth de
+  Supabase** — `createBrowserClient`/`createServerClient` de `@supabase/ssr`, más un
+  middleware/proxy de Next.js que llama `supabase.auth.getClaims()` en cada request. Nuestro
+  propio backend NO participa en ese flujo: no es "cambiar cómo se guardan las cookies", es un
+  cambio de quién es dueño de la sesión.
+- La documentación de `@supabase/ssr` no menciona CSRF en ningún lado (confirmado: cero
+  ocurrencias en las páginas relevantes) — consistente con que en ese modelo el navegador
+  termina hablando con el servidor de Supabase (potencialmente cross-origin vía Bearer/su propio
+  esquema), no con endpoints mutantes propios protegidos por cookie.
+
+**Por qué no se adopta:**
+1. **Nuestro `httpOnly` + CSRF double-submit fue una decisión de seguridad deliberada**
+   (`docs/auth-cookies.md`: "cerrar el riesgo de robo de tokens vía XSS", justificado
+   explícitamente por manejar datos financieros/personales de iglesias a nivel nacional).
+   Supabase acepta el trade-off contrario (refresh token legible por JS) como parte de su
+   diseño — adoptarlo en silencio bajaría nuestra postura de seguridad sin que sea una decisión
+   consciente.
+2. **Es un cambio de arquitectura, no de formato de cookie.** Adoptar `@supabase/ssr` de verdad
+   implicaría que el frontend (Next.js) pase a hablar directo con Supabase Auth vía su SDK —
+   exactamente lo que el paso 9 del plan describe como "cambio mucho más grande". Mezclarlo con
+   la decisión de cookies/CSRF (paso 7) los acopla innecesariamente.
+3. **La necesidad de CSRF no depende de quién emite el token.** Nuestros propios endpoints
+   mutantes (`finanzas`, etc.) van a seguir autenticándose por cookie contra NUESTRA API — el
+   vector de CSRF (un sitio malicioso hace que el navegador mande la cookie de sesión sin que el
+   usuario se entere) sigue existiendo sin importar si el JWT adentro lo firmó nuestro backend o
+   lo emitió Supabase Auth.
+
+**Decisión:** cuando llegue el cutover real, el contrato completo de `docs/auth-cookies.md`
+queda igual — mismas 3 cookies (`access_token` httpOnly, `refresh_token` httpOnly con
+`Path=/auth/refresh`, `csrf_token` legible), mismo `CsrfMiddleware`, mismos endpoints
+(`POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`) en nuestra propia API. Lo único
+que cambia por dentro es qué emite/valida el token: nuestro backend sigue siendo el único que le
+habla a Supabase Auth (server-to-server, vía el mismo API REST de GoTrue que ya probé en el
+paso 3 — `grant_type=password`/`grant_type=refresh_token`), y sigue siendo el que arma las
+cookies con `setAuthCookies` (`cookies.ts`, sin cambios) — el navegador nunca ve un token de
+Supabase directamente ni corre `supabase-js`. Consecuencia directa: **el paso 9 del plan
+("actualizar el frontend para usar `supabase-js`") queda descartado** — no hace falta, porque el
+frontend nunca deja de hablarle a nuestra propia API. `docs/supabase.md` y `prompt.md`
+actualizados para reflejar esto.
+
+**Pendiente (nota para cuando se implemente el cutover, no ahora):** el flujo `grant_type=password`
+de GoTrue típicamente se autentica con la `anon`/`publishable` key del proyecto (no la
+`service_role` que ya usamos para `mirrorUsuario`/admin) — vamos a necesitar agregar esa key al
+`.env` cuando se implemente el login real contra Supabase, no antes.
+
+**Pendiente:** paso 8 (migrar el flujo de invitación de Tesorero/Secretaria al mecanismo de
+invitación de Supabase Auth) es el siguiente, a la espera de autorización.
+
+## [2026-08-14 03:10] Fase 7, paso 8: cerrado sin código — el espejo existente ya cubre a Tesorero/Secretaria; el invite-by-email de Supabase queda fuera de la Fase 7 como decisión de producto aparte
+
+A diferencia de los pasos 3-7 (100% internos, sin tocar UX del frontend), este paso sí
+implicaba una decisión de producto real, así que se la planteé al fundador en vez de decidirla
+sola — igual que las decisiones técnicas de los pasos 5-7, pero esta cambiaba una experiencia
+que ve una persona real (cómo un Tesorero/Secretaria recibe su cuenta), no solo plomería
+interna.
+
+**Hallazgo — el paso, tal como estaba redactado en `docs/supabase.md`, ya estaba resuelto:**
+- Hoy `UsuariosService#create` (cuando el Pastor da de alta a un Tesorero/Secretaria) no manda
+  ningún correo — genera una contraseña temporal y la devuelve en la respuesta de la API para
+  que el Pastor la comparta manualmente. Confirmé que ningún flujo de `usuarios` usa
+  `MailService` (sí lo usan predicadores/facturación, pero no este).
+- `SupabaseAuthService#mirrorUsuario` (paso 1-2) se dispara en **cualquier** login exitoso, sin
+  filtrar por rol ni por cómo se creó la fila `Usuario` — así que un Tesorero/Secretaria recién
+  creado queda espejado en Supabase Auth automáticamente en su primer login, con la misma
+  contraseña temporal de siempre. El objetivo técnico del paso 8 (que Supabase Auth tenga una
+  copia de todos los usuarios reales, no solo de los managers) ya estaba cubierto sin escribir
+  una línea nueva.
+
+**Lo que sí sería nuevo (y se dejó fuera a propósito):** adoptar de verdad
+`supabase.auth.admin.inviteUserByEmail()` — Supabase le manda un correo directo a la persona
+invitada con un link para que defina su propia contraseña, sacando al Pastor de la cadena por
+completo. Investigado contra la documentación oficial: requeriría (a) una página nueva en el
+frontend para completar la invitación (contradice el "sin cambios para el frontend" que
+acabábamos de asentar en el paso 7 — aunque sin `supabase-js`, ya que el intercambio del token
+de invitación se puede hacer server-to-server igual que login/refresh), y (b) para que el
+correo tenga nuestra marca en vez de la plantilla genérica de Supabase, desplegar un Auth Hook
+(función Edge) que enrute el envío por Resend — infraestructura nueva del lado de Supabase, la
+misma categoría que se descartó a propósito en el paso 5 (Custom Access Token Hook).
+
+**Decisión (confirmada con el fundador):** mantener la UX actual sin cambios — el paso 8 queda
+cerrado tal como estaba planteado en el plan original. Adoptar el invite-by-email de Supabase
+se deja anotado como una mejora de producto **separada y opcional**, a evaluar en su propio
+momento, no como parte de la Fase 7 ni bloqueando el resto de sus pasos.
+
+**Pendiente:** con esto, los 9 pasos originales de la Fase 7 quedan resueltos (3 con
+infraestructura nueva: pasos 3-5; 3 solo con decisión/documentación: pasos 6-8; paso 9
+descartado como consecuencia del 7). Lo único que falta para un cutover real es la
+implementación final (reemplazar de verdad `LocalStrategy`/`JwtStrategy` por el flujo de
+Supabase en `POST /auth/login`/`POST /auth/refresh`) — todavía sin autorizar, y sigue
+condicionado a probarlo de punta a punta contra el proyecto de prueba antes de tocar el login
+real (ver recomendación al inicio de la sección de Fase 7 en `docs/supabase.md`).
