@@ -1,22 +1,18 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
+import { ForbiddenException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { EstadoIglesia, ModuloSistema, PlanIglesia, Rol, Usuario } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
 import { IglesiaSuspendidaException } from '../../common/exceptions/iglesia-suspendida.exception';
 import { calcularEstadoFacturacion } from '../../common/utils/calcular-facturacion';
 import { generateCsrfToken } from '../../common/utils/generate-csrf-token';
-import { generateSecureToken } from '../../common/utils/generate-secure-token';
-import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { PrismaService } from '../../prisma/prisma.service';
-import { SupabaseAuthService } from '../../supabase/supabase-auth.service';
+import { SupabaseAuthService, SupabaseSession } from '../../supabase/supabase-auth.service';
+import { SupabaseJwtVerifierService } from '../../supabase/supabase-jwt-verifier.service';
 import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
 import { FOTO_PERFIL_RESIZE, resolverExtensionFotoPerfil } from './foto-perfil-upload.config';
-import { JwtRefreshPayload } from './strategies/jwt-refresh.strategy';
 
 export type SafeUsuario = Omit<Usuario, 'password'> & {
   /** Para que el pastor/equipo vea el logo, nombre y plan de su iglesia en la app. */
@@ -43,28 +39,41 @@ export type PerfilResponse = SafeUsuario & {
   modulos: ModuloSistema[];
 };
 
+/** Lo que LocalStrategy adjunta a `req.user` en POST /auth/login — no es un JwtPayload. */
+export interface ValidatedLogin {
+  usuario: Usuario;
+  session: SupabaseSession;
+}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly jwtService: JwtService,
-    private readonly config: ConfigService,
     private readonly supabaseStorage: SupabaseStorageService,
     private readonly supabaseAuth: SupabaseAuthService,
+    private readonly supabaseJwtVerifier: SupabaseJwtVerifierService,
   ) {}
 
   /**
-   * Usado por LocalStrategy. Login por `email` (Fase 7 de docs/supabase.md — antes
-   * era por `username`; `username` sigue existiendo en el modelo pero ya no es la
-   * credencial de acceso). Mensaje de error genérico para no filtrar si el usuario
-   * existe — pero esa discreción solo aplica ANTES de confirmar la contraseña. Una
-   * vez que la contraseña ya es correcta, sí es intencional decirle explícitamente
-   * a un usuario de una iglesia en mora por qué no puede entrar (ver
-   * IglesiaSuspendidaException) en vez de darle el mismo error genérico.
+   * Usado por LocalStrategy. Login por `email` contra Supabase Auth (Fase 7 de
+   * docs/supabase.md, corte final) — ya no bcrypt como fuente de verdad.
+   * Mensaje de error genérico para no filtrar si el usuario existe — pero esa
+   * discreción solo aplica ANTES de confirmar la contraseña. Una vez que la
+   * contraseña ya es correcta, sí es intencional decirle explícitamente a un
+   * usuario de una iglesia en mora por qué no puede entrar (ver
+   * IglesiaSuspendidaException) en vez del mismo error genérico.
+   *
+   * Fallback auto-sanador: si Supabase rechaza pero bcrypt local confirma que
+   * la contraseña es correcta, significa que el espejo de Supabase nunca se
+   * creó o quedó con una contraseña vieja (ej. el usuario cambió su
+   * contraseña antes de que `changePassword` sincronizara hacia Supabase).
+   * Se sincroniza y se reintenta una sola vez — nunca se emite una sesión
+   * basada solo en bcrypt, porque los tokens de sesión reales solo los emite
+   * Supabase.
    */
-  async validateUser(email: string, password: string): Promise<Usuario> {
+  async validateUser(email: string, password: string): Promise<ValidatedLogin> {
     const usuario = await this.prisma.usuario.findUnique({
       where: { email },
       include: { iglesia: { select: { estado: true, proximaFacturacion: true } } },
@@ -74,9 +83,55 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales inválidas');
     }
 
-    const passwordMatches = await bcrypt.compare(password, usuario.password);
-    if (!passwordMatches) {
-      throw new UnauthorizedException('Credenciales inválidas');
+    let session = await this.trySupabaseSignIn(email, password);
+
+    if (!session) {
+      const passwordMatches = await bcrypt.compare(password, usuario.password);
+      if (!passwordMatches) {
+        throw new UnauthorizedException('Credenciales inválidas');
+      }
+
+      if (usuario.supabaseUserId) {
+        await this.supabaseAuth.syncPassword(usuario.supabaseUserId, password);
+      } else {
+        await this.supabaseAuth.mirrorUsuario(usuario, password);
+      }
+
+      session = await this.trySupabaseSignIn(email, password);
+      if (!session) {
+        this.logger.error(
+          `Supabase Auth siguió rechazando a ${usuario.id} después de sincronizar la contraseña`,
+        );
+        throw new UnauthorizedException('Credenciales inválidas');
+      }
+    }
+
+    // Reconcilia identidad: la sesión de Supabase puede pertenecer a una cuenta
+    // espejada en otro contexto (ej. una fila que solo existía en el Postgres local
+    // antes de apuntar a Supabase) cuyo app_metadata no coincide con esta fila real.
+    // Sin esto, JwtAuthGuard recibiría un usuarioId que no existe en la base actual y
+    // el login fallaría en la siguiente request pese al 200 de acá — bug real, visto
+    // en producción de pruebas al migrar de Postgres local a Supabase.
+    if (session.supabaseUserId !== usuario.supabaseUserId) {
+      await this.supabaseAuth.relinkUsuario(session.supabaseUserId, usuario);
+      await this.prisma.usuario.update({
+        where: { id: usuario.id },
+        data: { supabaseUserId: session.supabaseUserId },
+      });
+      usuario.supabaseUserId = session.supabaseUserId;
+
+      // El `session` que ya teníamos quedó con el app_metadata VIEJO horneado dentro del
+      // JWT — los tokens de Supabase son estáticos, actualizar el usuario no reemite los
+      // que ya se entregaron. Hay que volver a autenticar para obtener un access token
+      // que sí refleje el app_metadata recién corregido.
+      const sessionReautenticada = await this.trySupabaseSignIn(email, password);
+      if (!sessionReautenticada) {
+        this.logger.error(
+          `No se pudo reautenticar a ${usuario.id} después de re-vincular su cuenta de Supabase`,
+        );
+        throw new UnauthorizedException('Credenciales inválidas');
+      }
+      session = sessionReautenticada;
     }
 
     if (usuario.iglesia?.estado === EstadoIglesia.SUSPENDIDA) {
@@ -84,17 +139,27 @@ export class AuthService {
       throw new IglesiaSuspendidaException(diasEnMora);
     }
 
-    // Fase 7 (convivencia temporal): espeja este usuario a Supabase Auth en segundo
-    // plano, sin bloquear ni poder tumbar este login — es la única vez que el
-    // backend tiene el password en texto plano, así que es el único momento
-    // posible para crear el usuario espejo. No-op si ya estaba espejado o si el
-    // proyecto de prueba no está configurado en este entorno (ver SupabaseAuthService).
-    void this.supabaseAuth.mirrorUsuario(usuario, password).catch((error: Error) => {
-      this.logger.warn(`No se pudo espejar el usuario ${usuario.id} a Supabase Auth: ${error.message}`);
-    });
-
     const { iglesia, ...usuarioSinIglesia } = usuario;
-    return usuarioSinIglesia;
+    return { usuario: usuarioSinIglesia, session };
+  }
+
+  /**
+   * Envuelve signInWithPassword para distinguir "Supabase dijo que la
+   * contraseña es incorrecta" (null, esperado) de "Supabase no respondió bien
+   * por otra razón" (config faltante, proyecto caído) — este segundo caso se
+   * loguea como error real, pero de cara al llamador se trata igual como "no
+   * autenticado", dejando que el fallback bcrypt decida si igual puede
+   * entrar. Nota: si Supabase está genuinamente inalcanzable, el login queda
+   * bloqueado igual (los tokens de sesión solo los emite Supabase) — es una
+   * dependencia aceptada del corte, no algo que este fallback intente evitar.
+   */
+  private async trySupabaseSignIn(email: string, password: string): Promise<SupabaseSession | null> {
+    try {
+      return await this.supabaseAuth.signInWithPassword(email, password);
+    } catch (error) {
+      this.logger.error(`signInWithPassword falló para ${email}: ${(error as Error).message}`);
+      return null;
+    }
   }
 
   /**
@@ -102,9 +167,7 @@ export class AuthService {
    * El frontend usa requiresPasswordChange / requiresOnboarding para decidir si
    * muestra el modal obligatorio antes de dejar entrar a cualquier otra pantalla.
    */
-  async login(usuario: Usuario): Promise<LoginResponse> {
-    const tokens = await this.issueTokens(usuario);
-
+  async login(usuario: Usuario, session: SupabaseSession): Promise<LoginResponse> {
     const ahora = new Date();
     await Promise.all([
       this.prisma.sesionActividad.create({
@@ -114,7 +177,9 @@ export class AuthService {
     ]);
 
     return {
-      ...tokens,
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken,
+      csrfToken: generateCsrfToken(),
       usuario: {
         ...(await this.attachIglesia(usuario)),
         modulos: await this.getModulosOtorgados(usuario),
@@ -131,7 +196,7 @@ export class AuthService {
    * leen frescos de la BD para que el frontend pueda pintar el menú al día apenas
    * el MANAGER otorga/revoca un módulo — aunque la API todavía no lo permita hasta
    * que el access token actual expire y se refresque (hasta 15 min, ver
-   * ModuloAccessGuard/JwtStrategy). Es la misma ventana ya aceptada para `rol`.
+   * ModuloAccessGuard/JwtAuthGuard). Es la misma ventana ya aceptada para `rol`.
    */
   async getProfile(usuarioId: string): Promise<PerfilResponse> {
     const usuario = await this.prisma.usuario.findUnique({ where: { id: usuarioId } });
@@ -147,41 +212,24 @@ export class AuthService {
     };
   }
 
-  async refreshTokens(payload: JwtRefreshPayload): Promise<AuthTokens> {
-    const tokenHash = this.hashToken(payload.refreshToken);
-
-    const stored = await this.prisma.refreshToken.findUnique({ where: { tokenHash } });
-
-    if (!stored || stored.usuarioId !== payload.sub || stored.expiresAt < new Date()) {
+  /**
+   * Rota el refresh token contra GoTrue (`grant_type=refresh_token`) — ya no
+   * hay tabla local que consultar: la rotación y la detección de reuso las
+   * hace Supabase del lado de GoTrue (decisión ya aceptada, ver
+   * docs/supabase.md paso 6).
+   */
+  async refreshTokens(refreshTokenCookie: string): Promise<AuthTokens> {
+    let session: SupabaseSession;
+    try {
+      session = await this.supabaseAuth.refreshSession(refreshTokenCookie);
+    } catch (error) {
+      this.logger.debug(`refreshSession rechazado: ${(error as Error).message}`);
       throw new UnauthorizedException('Refresh token inválido o expirado');
     }
 
-    if (stored.revoked) {
-      // Reuso de un refresh token que ya fue rotado: puede ser un robo (alguien
-      // reproduciendo un token viejo) o dos tabs refrescando casi al mismo tiempo
-      // — no hay forma de distinguirlos acá. Ante la duda, se cierra la sesión
-      // en todos los dispositivos y se obliga a loguear de nuevo.
-      await this.prisma.refreshToken.updateMany({
-        where: { usuarioId: stored.usuarioId, revoked: false },
-        data: { revoked: true },
-      });
-      throw new UnauthorizedException('Refresh token inválido o expirado');
-    }
+    const usuarioId = await this.supabaseJwtVerifier.verifyAndExtractUsuarioId(session.accessToken);
 
-    // Update atómico y condicional: si dos requests llegan con el mismo token
-    // casi al mismo tiempo, solo una gana la carrera (count === 1) y rota el
-    // token; la otra ve count === 0 y recibe un 401 simple, sin gatillar la
-    // detección de reuso de arriba (que es para un token YA rotado antes).
-    const rotated = await this.prisma.refreshToken.updateMany({
-      where: { id: stored.id, revoked: false },
-      data: { revoked: true },
-    });
-
-    if (rotated.count === 0) {
-      throw new UnauthorizedException('Refresh token inválido o expirado');
-    }
-
-    const usuario = await this.prisma.usuario.findUnique({ where: { id: payload.sub } });
+    const usuario = await this.prisma.usuario.findUnique({ where: { id: usuarioId } });
     if (!usuario || !usuario.activo) {
       throw new UnauthorizedException('Usuario inválido o inactivo');
     }
@@ -189,16 +237,24 @@ export class AuthService {
     // Respaldo best-effort del heartbeat (ver ./auth.controller.ts#heartbeat): un refresh
     // ocurre cada ~15 min mientras la pestaña está abierta, así que igual sirve como señal
     // de actividad aunque el heartbeat del frontend falle o tarde en desplegarse.
-    const [tokens] = await Promise.all([this.issueTokens(usuario), this.bumpActividad(usuario.id)]);
-    return tokens;
+    await this.bumpActividad(usuario.id);
+
+    return {
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken,
+      csrfToken: generateCsrfToken(),
+    };
   }
 
-  async logout(usuarioId: string): Promise<void> {
+  /**
+   * `accessToken` viene de la cookie del propio request de logout — GoTrue
+   * identifica qué sesión/usuario cerrar a partir de ese JWT, no de un id
+   * suelto. `scope: 'global'` iguala el comportamiento anterior (revocar
+   * refresh tokens en todos los dispositivos, no solo el actual).
+   */
+  async logout(usuarioId: string, accessToken: string | undefined): Promise<void> {
     await Promise.all([
-      this.prisma.refreshToken.updateMany({
-        where: { usuarioId, revoked: false },
-        data: { revoked: true },
-      }),
+      accessToken ? this.supabaseAuth.signOut(accessToken, 'global') : Promise.resolve(),
       this.prisma.sesionActividad.updateMany({
         where: { usuarioId, finAt: null },
         data: { finAt: new Date() },
@@ -236,32 +292,46 @@ export class AuthService {
   }
 
   /**
-   * Cambio de contraseña forzado (o voluntario). Al completarse limpia
-   * mustChangePassword y revoca las demás sesiones activas del usuario.
+   * Cambio de contraseña forzado (o voluntario). Actualiza el hash local Y
+   * sincroniza la contraseña hacia Supabase (evita que se repita el
+   * desincronizado que resuelve el fallback de `validateUser`) — best-effort:
+   * si la sincronización falla, el próximo login se autosana igual, así que
+   * no vale la pena bloquear la respuesta de este endpoint por eso. Cierra
+   * las demás sesiones activas contra Supabase (`scope: 'global'`), mismo
+   * efecto que antes tenía revocar todos los RefreshToken locales.
    */
-  async changePassword(usuarioId: string, dto: ChangePasswordDto): Promise<void> {
+  async changePassword(
+    usuarioId: string,
+    dto: ChangePasswordDto,
+    accessToken: string | undefined,
+  ): Promise<void> {
     const usuario = await this.prisma.usuario.findUnique({ where: { id: usuarioId } });
     if (!usuario) {
       throw new UnauthorizedException();
     }
 
-    const passwordMatches = await bcrypt.compare(dto.currentPassword, usuario.password);
-    if (!passwordMatches) {
+    if (!(await this.confirmarPassword(usuario, dto.currentPassword))) {
       throw new UnauthorizedException('La contraseña actual no es correcta');
     }
 
     const newPasswordHash = await bcrypt.hash(dto.newPassword, BCRYPT_ROUNDS);
 
-    await this.prisma.$transaction([
-      this.prisma.usuario.update({
-        where: { id: usuarioId },
-        data: { password: newPasswordHash, mustChangePassword: false },
-      }),
-      this.prisma.refreshToken.updateMany({
-        where: { usuarioId, revoked: false },
-        data: { revoked: true },
-      }),
-    ]);
+    await this.prisma.usuario.update({
+      where: { id: usuarioId },
+      data: { password: newPasswordHash, mustChangePassword: false },
+    });
+
+    if (usuario.supabaseUserId) {
+      await this.supabaseAuth.syncPassword(usuario.supabaseUserId, dto.newPassword).catch((error: Error) => {
+        this.logger.warn(
+          `No se pudo sincronizar la nueva contraseña a Supabase Auth para ${usuario.id}: ${error.message}`,
+        );
+      });
+    }
+
+    if (accessToken) {
+      await this.supabaseAuth.signOut(accessToken, 'global');
+    }
   }
 
   /** Autoedición del perfil: solo datos personales. Username/email/rol quedan fuera de alcance. */
@@ -300,58 +370,50 @@ export class AuthService {
     return this.getProfile(usuarioId);
   }
 
-  /** Confirmación de identidad para acciones sensibles (ej. eliminar un movimiento financiero). */
+  /**
+   * Confirmación de identidad para acciones sensibles (ej. eliminar un movimiento
+   * financiero, cambiar la fecha de facturación). Lanza `ForbiddenException` (403), no
+   * `UnauthorizedException` (401) — el usuario SÍ está autenticado (ya pasó
+   * JwtAuthGuard), solo falló esta confirmación puntual. Usar 401 acá hacía que el
+   * frontend, que trata cualquier 401 como "sesión inválida, cerrar sesión", expulsara
+   * al usuario del sistema con solo escribir mal la contraseña de confirmación — mismo
+   * criterio que ya usa `IglesiaSuspendidaException` para esta misma distinción.
+   */
   async verifyPassword(usuarioId: string, password: string): Promise<void> {
     const usuario = await this.prisma.usuario.findUnique({ where: { id: usuarioId } });
     if (!usuario) {
       throw new UnauthorizedException();
     }
 
-    const passwordMatches = await bcrypt.compare(password, usuario.password);
-    if (!passwordMatches) {
-      throw new UnauthorizedException('Contraseña incorrecta');
+    if (!(await this.confirmarPassword(usuario, password))) {
+      throw new ForbiddenException('Contraseña incorrecta');
     }
   }
 
-  private async issueTokens(usuario: Usuario): Promise<AuthTokens> {
-    const payload: JwtPayload = {
-      sub: usuario.id,
-      email: usuario.email,
-      rol: usuario.rol,
-      iglesiaId: usuario.iglesiaId,
-      modulos: await this.getModulosOtorgados(usuario),
-    };
+  /**
+   * Confirma `password` contra la MISMA fuente de verdad que usa el login (Supabase
+   * primero, bcrypt local como fallback con resincronización) — usado por
+   * `changePassword` y `verifyPassword`. Sin esto, un usuario que inició sesión bien
+   * (vía Supabase, porque su cuenta ya está relinkeada/vigente ahí) podía fallar en
+   * cualquier acción de "confirma tu contraseña" si el hash local había quedado
+   * desincronizado — bug real encontrado el 2026-08-16 al migrar de Postgres local a
+   * Supabase: el login pasaba, pero re-ingresar la misma contraseña para confirmar un
+   * cambio de fecha de facturación (u otras acciones con `ConfirmPasswordDto`) daba
+   * "Contraseña incorrecta" pese a ser la contraseña correcta.
+   */
+  private async confirmarPassword(usuario: Usuario, password: string): Promise<boolean> {
+    const session = await this.trySupabaseSignIn(usuario.email, password);
+    if (session) {
+      return true;
+    }
 
-    const [accessToken, refreshToken] = await Promise.all([
-      this.jwtService.signAsync(payload, {
-        secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
-        expiresIn: this.config.get<string>('JWT_ACCESS_EXPIRATION', '15m'),
-      }),
-      this.jwtService.signAsync(payload, {
-        secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
-        expiresIn: this.config.get<string>('JWT_REFRESH_EXPIRATION', '7d'),
-        // jti único: sin esto, dos refresh casi simultáneos del mismo usuario
-        // (multi-dispositivo) firman el mismo JWT byte-idéntico (mismo payload +
-        // mismo iat/exp) y el segundo create() revienta el @@unique de tokenHash.
-        jwtid: generateSecureToken(16),
-      }),
-    ]);
-
-    const decoded = this.jwtService.decode<{ exp: number }>(refreshToken);
-
-    await this.prisma.refreshToken.create({
-      data: {
-        tokenHash: this.hashToken(refreshToken),
-        usuarioId: usuario.id,
-        expiresAt: new Date(decoded.exp * 1000),
-      },
-    });
-
-    return { accessToken, refreshToken, csrfToken: generateCsrfToken() };
-  }
-
-  private hashToken(token: string): string {
-    return createHash('sha256').update(token).digest('hex');
+    const passwordMatches = await bcrypt.compare(password, usuario.password);
+    if (passwordMatches && usuario.supabaseUserId) {
+      await this.supabaseAuth.syncPassword(usuario.supabaseUserId, password).catch((error: Error) => {
+        this.logger.warn(`No se pudo sincronizar contraseña para ${usuario.id}: ${error.message}`);
+      });
+    }
+    return passwordMatches;
   }
 
   /**

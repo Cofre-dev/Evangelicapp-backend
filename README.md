@@ -14,9 +14,10 @@ Este repositorio contiene **solo el backend**. El frontend vive en un repositori
 | Lenguaje | TypeScript 5 |
 | Base de datos | PostgreSQL (gestionado por Supabase) |
 | ORM | [Prisma](https://www.prisma.io/) 5 |
-| Auth | JWT (access + refresh con rotación), Passport (`passport-local`, `passport-jwt`) |
+| Auth | Supabase Auth (GoTrue) — sesión real emitida por Supabase, verificada vía JWKS (`jose`); `passport-local` solo para el binding de credenciales en `POST /auth/login` |
 | Validación | `class-validator` / `class-transformer` |
-| Email | Nodemailer (SMTP) |
+| Email | Nodemailer (SMTP) o Resend, según `MAIL_PROVIDER` |
+| WhatsApp | Meta Cloud API (WhatsApp Business), vía `fetch` nativo — convocatoria a integrantes |
 | Excel | ExcelJS (export de movimientos financieros) |
 | Lint/Format | ESLint 9 (flat config) + Prettier |
 | Tests | Jest + ts-jest |
@@ -36,13 +37,36 @@ Al agregar un modelo/endpoint nuevo, seguir el mismo patrón: `iglesiaId` desde 
 
 ### Auth
 
-- Login por **username** (no email — el email es solo dato de contacto/recuperación).
-- Access token (15 min, configurable) + refresh token (7 días, configurable), ambos JWT firmados con secretos distintos.
+**Desde el corte de la Fase 7 de `docs/supabase.md` (2026-08-16), la sesión real la emite Supabase
+Auth (GoTrue), no un JWT propio.** `POST /auth/login`/`POST /auth/refresh` hablan server-to-server
+con la API REST de GoTrue (`grant_type=password`/`grant_type=refresh_token`) — el navegador nunca
+corre `supabase-js` ni le habla a Supabase directamente, sigue hablando solo con esta API.
+
+- Login por **email** (no username — `username` sigue existiendo en el modelo como dato de
+  visualización, pero dejó de ser la credencial de acceso).
+- `access_token` es un JWT real de Supabase (ES256, verificable vía JWKS); `refresh_token` es un
+  **string opaco** (no un JWT) — solo se puede validar presentándoselo de nuevo a GoTrue, no hay
+  nada que verificar localmente.
 - **Los tokens viajan en cookies `httpOnly`, nunca en el body de la respuesta ni en `localStorage`** — así un XSS en el frontend no puede robarlos vía JavaScript. Detalle completo (nombres de cookie, atributos, CSRF, CORS) en [`docs/auth-cookies.md`](./docs/auth-cookies.md).
-- Los refresh tokens se guardan hasheados (SHA-256) en la tabla `refresh_tokens`, con **rotación atómica**: al usarse uno queda `revoked` vía un `updateMany` condicional (evita doble-emisión si dos requests llegan casi al mismo tiempo). Reusar un refresh token ya rotado se trata como posible robo: revoca **todas** las sesiones activas del usuario y fuerza re-login.
-- `JwtStrategy` revalida `usuario.activo` contra la base de datos en **cada** request — desactivar a un usuario corta su acceso de inmediato, no cuando expire el token. Acepta el access token desde la cookie o (transición) desde `Authorization: Bearer`.
-- CSRF: patrón double-submit cookie vía `CsrfMiddleware` — toda request mutante (POST/PUT/PATCH/DELETE) que traiga una cookie de sesión debe reflejar su valor en el header `X-CSRF-Token`.
+- La rotación y detección de reuso de refresh tokens las hace Supabase del lado de GoTrue, no una
+  tabla local (`RefreshToken` sigue en el schema pero ya no se usa — pendiente de eliminar en una
+  migración aparte). Diferencia real de comportamiento respecto al sistema anterior: GoTrue tiene
+  un período de gracia de reuso (~10s, pensado para reintentos de red), no revoca todo al instante
+  ante cualquier reuso como hacía el sistema propio que reemplazó.
+- `JwtAuthGuard` (`common/guards/jwt-auth.guard.ts`) verifica el access token vía JWKS
+  (`SupabaseJwtVerifierService`) y revalida en la misma query `usuario.activo`,
+  `iglesia.estado !== SUSPENDIDA` y el allowlist de `mustChangePassword` — desactivar a un usuario
+  corta su acceso de inmediato, no cuando expire el token. Acepta el token desde la cookie o
+  (transición) desde `Authorization: Bearer`.
+- **Fallback auto-sanador**: si Supabase rechaza una contraseña que el hash local (bcrypt) sí
+  reconoce como correcta (contraseña cambiada antes de que existiera esta sincronización, cuenta
+  espejada desde otro entorno, etc.), `AuthService` sincroniza hacia Supabase y reintenta antes de
+  dar por inválida la contraseña — nunca emite una sesión basada solo en bcrypt, los tokens reales
+  siempre salen de Supabase. Mismo mecanismo lo usan `changePassword` y `verifyPassword`
+  (confirmación de contraseña para acciones sensibles).
+- CSRF: patrón double-submit cookie vía `CsrfMiddleware` — toda request mutante (POST/PUT/PATCH/DELETE) que traiga una cookie de sesión debe reflejar su valor en el header `X-CSRF-Token`. Es 100% propio, no depende de quién emite el token de sesión.
 - `mustChangePassword` y `onboardingCompletado` en `Usuario` gatillan pantallas obligatorias en el frontend antes de dejar usar el resto de la app (ver `LoginResponse` en `auth.service.ts`).
+- Confirmación de contraseña para acciones sensibles (`ConfirmPasswordDto` — borrar ceremonias/movimientos, corregir fecha de facturación) responde `403 Forbidden` si la contraseña no coincide, nunca `401` — 401 se reserva para "tu sesión no es válida"; usar el mismo código para ambos casos hacía que algunos frontends interpretaran una contraseña de confirmación mal escrita como sesión inválida y cerraran sesión.
 
 ### Roles y permisos
 
@@ -61,7 +85,7 @@ Rutas públicas (sin guard — el propio token de un solo uso en la URL es la au
 
 Cada iglesia contrata uno de 3 planes (`PlanIglesia`: `BASICO`, `MEDIO`, `PRO`), asignado obligatoriamente por el SuperAdmin al crear la iglesia (`POST /iglesias`) junto con la primera fecha de facturación (`proximaFacturacion`) — no hay un plan por defecto. Los topes de cada plan (máximo de usuarios activos y de subdepartamentos de finanzas) viven en `common/constants/plan.ts` (`PLAN_LIMITS`) y se validan al momento de crear (`UsuariosService#create`, `DepartamentosService#create`), nunca de forma retroactiva: bajar de plan no borra ni desactiva nada, solo bloquea crear más hasta volver a estar bajo el tope nuevo.
 
-No hay pasarela de pago todavía: el SuperAdmin confirma los pagos a mano (`POST /iglesias/:id/marcar-pagada`, que avanza la fecha de facturación un mes exacto desde la fecha vencida) y puede ocultar una iglesia con 3+ días de mora (`PATCH /iglesias/:id/ocultar`, reutiliza `EstadoIglesia.SUSPENDIDA`). Una iglesia oculta no puede loguearse ni mantener una sesión activa — `AuthService#validateUser` y `JwtStrategy#validate` revalidan `estado` en cada login/request (mismo patrón que ya existía para `usuario.activo`) y responden 403 con `code: "IGLESIA_SUSPENDIDA"`. El semáforo de facturación (verde/amarillo/rojo según los días que faltan) se calcula siempre en el backend (`common/utils/calcular-facturacion.ts`), nunca en el frontend — ver `GET /iglesias/:id` (SuperAdmin) y `GET /mi-iglesia/facturacion` (MANAGER, informativo).
+No hay pasarela de pago todavía: el SuperAdmin confirma los pagos a mano (`POST /iglesias/:id/marcar-pagada`, que avanza la fecha de facturación un mes exacto desde la fecha vencida) y puede ocultar una iglesia con 3+ días de mora (`PATCH /iglesias/:id/ocultar`, reutiliza `EstadoIglesia.SUSPENDIDA`). Una iglesia oculta no puede loguearse ni mantener una sesión activa — `AuthService#validateUser` y `JwtAuthGuard#canActivate` revalidan `estado` en cada login/request (mismo patrón que ya existía para `usuario.activo`) y responden 403 con `code: "IGLESIA_SUSPENDIDA"`. El semáforo de facturación (verde/amarillo/rojo según los días que faltan) se calcula siempre en el backend (`common/utils/calcular-facturacion.ts`), nunca en el frontend — ver `GET /iglesias/:id` (SuperAdmin) y `GET /mi-iglesia/facturacion` (MANAGER, informativo).
 
 ### Auditoría financiera
 
@@ -83,7 +107,10 @@ No hay pasarela de pago todavía: el SuperAdmin confirma los pagos a mano (`POST
 | `ceremonias` | `/ceremonias/matrimonios/*`, `/ceremonias/bautizos/*`, `/ceremonias/defunciones/*`, `/ceremonias/presentaciones/*` | Libro de ceremonias (folio correlativo por iglesia) + descarga del certificado en PDF |
 | `integrantes` | `/integrantes/*`, `/integrantes/registro/:qrToken` | Censo de congregantes vía QR propio de la iglesia; alta pública por QR, gestión desde el equipo |
 | `notas` | `/notas/*` | Tareas/recordatorios asignables (MANAGER crea/asigna, equipo marca como hechas) |
-| `mail` | — | Servicio interno (Nodemailer o Resend), no expone rutas |
+| `mail` | — | Servicio interno (Nodemailer o Resend, según `MAIL_PROVIDER`), no expone rutas |
+| `whatsapp` | — | Servicio interno (Meta Cloud API) — convocatoria a integrantes vía `eventos.service.ts#notificarIntegrantes`, siempre junto al email, nunca en su reemplazo. Sin `WHATSAPP_ACCESS_TOKEN` configurado, queda en no-op (el email sigue funcionando) |
+| `realtime` | WebSocket (no HTTP) | Un solo gateway para 3 pantallas en vivo (dashboard SuperAdmin, evento del pastor, censo de integrantes) — WebSocket propio, no Supabase Realtime nativo (evita depender de RLS, que todavía no está activo) |
+| `supabase` | — | Módulo global (`@Global()`): `SupabaseStorageService` (Storage — logos/fotos), `SupabaseAuthService` (login/refresh/signOut reales contra GoTrue), `SupabaseJwtVerifierService` (verificación JWKS del access token) |
 | `prisma` | — | Módulo global que expone `PrismaService` |
 
 ## Requisitos
@@ -94,7 +121,17 @@ No hay pasarela de pago todavía: el SuperAdmin confirma los pagos a mano (`POST
 
 ### Base de datos
 
-El proveedor de base de datos es **Supabase** (proyecto `evangelicapp`, Postgres gestionado) — `DATABASE_URL` en `.env` apunta ahí. Para desarrollo local aislado (sin tocar la base compartida) sigue disponible `docker-compose.yml` en `backend/`: `docker compose up -d postgres` levanta un Postgres 16 local con las mismas credenciales que trae `.env.example` (`user`/`password`/`evangelicapp` en el puerto 5432).
+El proveedor de base de datos es **Supabase** (proyecto `Backend`, Postgres gestionado) —
+`DATABASE_URL` en `.env` apunta ahí directamente; es la fuente de verdad real, no un fallback.
+**Nota:** esa base ya tiene datos de uso real del equipo fundador (no es solo data descartable de
+demo) — confirmar antes de correr el seed o cualquier operación masiva. `docker-compose.yml`
+sigue en `backend/` por si hace falta un Postgres local aislado para pruebas puntuales, pero
+**ya no es el flujo de trabajo habitual** (se usó temporalmente entre el 2026-08-07 y el
+2026-08-16 mientras el proyecto de Supabase estaba pausado — ver `FEATURES.md`).
+
+Auth es un proyecto de Supabase **separado y desechable** (`Backend-auth-test`,
+`SUPABASE_AUTH_TEST_*` en `.env`) — nunca el mismo proyecto que Storage/DB. Ver
+[`docs/supabase.md`](./docs/supabase.md) (Fase 7) para el porqué de esa separación.
 
 ## Puesta en marcha
 
@@ -116,14 +153,17 @@ Ver `backend/.env.example`. Resumen:
 
 | Variable | Uso |
 |---|---|
-| `DATABASE_URL` | Connection string de PostgreSQL para Prisma |
+| `DATABASE_URL` | Connection string de PostgreSQL para Prisma (proyecto real de Supabase) |
 | `PORT` | Puerto HTTP (default 3001) |
 | `CORS_ORIGIN` | Uno o varios orígenes del frontend, separados por coma (ej. `http://localhost:3000,https://app.evangelicapp.cl`) |
 | `NODE_ENV` | En `production` las cookies de auth se marcan `Secure` (solo viajan por HTTPS) |
-| `JWT_ACCESS_SECRET` / `JWT_ACCESS_EXPIRATION` | Firma y expiración del access token (y de su cookie) |
-| `JWT_REFRESH_SECRET` / `JWT_REFRESH_EXPIRATION` | Firma y expiración del refresh token (y de su cookie) |
-| `FRONTEND_URL` | Usado para construir el link de confirmación de predicadores en el email |
-| `SMTP_HOST` / `SMTP_PORT` / `MAIL_FROM` | Configuración del transporte de Nodemailer |
+| `JWT_ACCESS_EXPIRATION` / `JWT_REFRESH_EXPIRATION` | Duración de las cookies de sesión (los tokens en sí ya no los firma este backend, los emite Supabase) |
+| `FRONTEND_URL` | Usado para construir links de confirmación (predicadores, integrantes) en emails/WhatsApp |
+| `SMTP_HOST` / `SMTP_PORT` / `MAIL_FROM` | Transporte SMTP (Nodemailer), usado si `MAIL_PROVIDER="smtp"` (default) |
+| `MAIL_PROVIDER` / `RESEND_API_KEY` | `"smtp"` (default) o `"resend"` |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Proyecto real de Supabase — Storage (logos, fotos, certificados) |
+| `SUPABASE_AUTH_TEST_URL` / `SUPABASE_AUTH_TEST_SERVICE_ROLE_KEY` / `SUPABASE_AUTH_TEST_ANON_KEY` | Proyecto de Supabase **separado y desechable** dedicado a Auth (`Backend-auth-test`) — opcionales, sin ellas el login real queda inoperante en ese entorno pero el resto del backend sigue funcionando |
+| `WHATSAPP_ACCESS_TOKEN` / `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_API_VERSION` / `WHATSAPP_TEMPLATE_CONVOCATORIA_EVENTO` | Meta Cloud API — opcionales, sin `WHATSAPP_ACCESS_TOKEN` la convocatoria por WhatsApp queda en no-op (el email sigue funcionando) |
 
 **Nunca** commitear un `.env` con secretos reales — está en `.gitignore`. En producción, estas variables deben venir del proveedor de hosting/secret manager, no del repo.
 
@@ -160,14 +200,25 @@ Si no se pasa `--password`, se genera una temporal que se imprime una sola vez e
 
 ## Migraciones de base de datos
 
-Prisma Migrate en modo desarrollo:
+**Importante — `DATABASE_URL` apunta al proyecto real de Supabase, compartido, no a un Postgres
+local propio de cada dev.** `npm run prisma:migrate` (`prisma migrate dev`) está pensado para un
+Postgres descartable donde Prisma puede resetear/recrear libremente — correrlo tal cual contra la
+base compartida es arriesgado. Convención de este repo (ver `github.md`): escribir la migración,
+revisar el SQL generado, y aplicarla con `prisma migrate deploy` (no genera nada nuevo, solo
+aplica lo que ya existe en `prisma/migrations/`), igual que se hace en producción:
 
 ```bash
-# tras editar prisma/schema.prisma
-npm run prisma:migrate -- --name descripcion_del_cambio
+# tras editar prisma/schema.prisma — generar el SQL sin aplicarlo todavía
+npx prisma migrate dev --create-only --name descripcion_del_cambio
+# revisar prisma/migrations/<timestamp>_descripcion_del_cambio/migration.sql a mano
+npx prisma migrate deploy
 ```
 
-Esto genera un archivo SQL versionado en `prisma/migrations/` — **no editar migraciones ya aplicadas en `main`**; si algo quedó mal, generar una migración correctiva nueva. En producción se aplican con `prisma migrate deploy` (sin generar nuevas, solo aplica las existentes).
+**No editar migraciones ya aplicadas en `main`**; si algo quedó mal, generar una migración
+correctiva nueva. Antes de aplicar cualquier migración contra la base real, correr
+`npx prisma migrate status` primero — si aparece una fila de tracking corrupta o una tabla que no
+está en `schema.prisma`, investigar antes de seguir (ver `FEATURES.md`, entrada del 2026-08-16,
+para un caso real de esto).
 
 ## Testing
 
@@ -193,7 +244,8 @@ Jest + ts-jest, specs colocados junto al código como `*.spec.ts` (convención d
 
 - Sin tests de integración/e2e (solo unitarios de utilidades puras y del middleware CSRF por ahora).
 - Rol `MIEMBRO` está definido en el schema pero sin endpoints propios todavía.
-- Storage de logos es local (`uploads/`) — migrar a un bucket (S3/GCS/etc.) antes de desplegar a un entorno con múltiples instancias o disco efímero.
-- `JwtStrategy` todavía acepta `Authorization: Bearer` como fallback además de la cookie — retirarlo una vez confirmado que el frontend migró por completo (ver [`docs/auth-cookies.md`](./docs/auth-cookies.md)).
+- `JwtAuthGuard` todavía acepta `Authorization: Bearer` como fallback además de la cookie — retirarlo una vez confirmado que el frontend migró por completo (ver [`docs/auth-cookies.md`](./docs/auth-cookies.md)).
 - No hay pasarela de pago: los planes/facturación se gestionan con confirmación manual del SuperAdmin (ver "Planes comerciales y facturación" más arriba). El módulo de facturación del lado de la iglesia es solo informativo.
-- Hosting de la API: hasta ahora Render (ver bitácora en `FEATURES.md`) — a confirmar con el fundador si sigue siendo así ahora que la base de datos vive en Supabase.
+- El modelo `RefreshToken` sigue en `schema.prisma` pero ya no se usa (Supabase Auth maneja la rotación/reuso de refresh tokens desde el corte de la Fase 7) — pendiente una migración aparte para eliminar la tabla, no urgente.
+- Fase 8 de `docs/supabase.md` (RLS) puede empezar ahora que la Fase 7 está cortada, pero tiene un caveat técnico sin resolver: Prisma no abre conexiones "como el usuario autenticado" — ver `docs/supabase-todo.md`.
+- Hosting de la API: hasta ahora Render (ver bitácora en `FEATURES.md`) — a confirmar con el fundador si sigue siendo así.

@@ -1,6 +1,4 @@
 import { Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
 import {
   OnGatewayConnection,
   OnGatewayDisconnect,
@@ -11,9 +9,9 @@ import {
 import { EstadoIglesia, Rol } from '@prisma/client';
 import { Server, Socket } from 'socket.io';
 import { ACCESS_TOKEN_COOKIE } from '../../common/constants/auth-cookies';
-import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { resolveCorsOrigins } from '../../common/utils/cors-origins.util';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SupabaseJwtVerifierService } from '../../supabase/supabase-jwt-verifier.service';
 import { iglesiaRoom, SUPERADMIN_ROOM } from './realtime-rooms.util';
 import { RealtimeService } from './realtime.service';
 
@@ -23,13 +21,17 @@ import { RealtimeService } from './realtime.service';
  * vivo. Decisión propia, distinta a lo que planteaba el doc original
  * (Supabase Realtime nativo vía postgres_changes): ese mecanismo transmite a
  * cualquier cliente con la anon key pública salvo que RLS esté activo
- * filtrando fila por fila, y RLS (Fase 8) todavía no existe — depende de un
- * claim `iglesia_id` en el JWT de Supabase Auth (Fase 7), que tampoco existe.
- * Prender postgres_changes hoy habría expuesto eventos/integrantes de
- * cualquier iglesia a cualquier cliente. Este gateway en cambio reutiliza el
- * JWT propio que ya emite AuthService y hace el scoping por tenant del mismo
- * modo que cualquier query de Prisma: el servidor decide a qué room se une
- * cada socket (`iglesiaId` del payload verificado), nunca el cliente.
+ * filtrando fila por fila, y RLS (Fase 8) todavía no existe. Este gateway en
+ * cambio hace el scoping por tenant del mismo modo que cualquier query de
+ * Prisma: el servidor decide a qué room se une cada socket, nunca el
+ * cliente.
+ *
+ * Fase 7, corte final: el `access_token` en la cookie ahora lo emite Supabase
+ * Auth (JWT ES256, verificable vía JWKS), no un JWT propio firmado con
+ * JWT_ACCESS_SECRET — por eso este gateway verifica con
+ * `SupabaseJwtVerifierService` (mismo servicio que usa `JwtAuthGuard` del
+ * lado HTTP) y vuelve a consultar `rol`/`iglesiaId` frescos de la BD en vez
+ * de confiar en los claims del token, igual criterio que `JwtAuthGuard`.
  */
 @WebSocketGateway({
   cors: { origin: resolveCorsOrigins(), credentials: true },
@@ -41,8 +43,7 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
   private readonly server!: Server;
 
   constructor(
-    private readonly jwtService: JwtService,
-    private readonly config: ConfigService,
+    private readonly supabaseJwtVerifier: SupabaseJwtVerifierService,
     private readonly prisma: PrismaService,
     private readonly realtimeService: RealtimeService,
   ) {}
@@ -54,12 +55,12 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
   /**
    * Autenticación y join a la room correspondiente, una sola vez al conectar
    * (acá no hay mensajes entrantes del cliente, solo eventos salientes del
-   * servidor). Mismo criterio mínimo que JwtStrategy.validate(): usuario
-   * activo e iglesia no suspendida. A diferencia del HTTP (que revalida esto
-   * en cada request), un socket que sigue abierto no se corta a mitad de
-   * conexión si el usuario se desactiva o la iglesia entra en mora después de
-   * conectar — limitación aceptada, acotada por la vida del propio socket
-   * (el frontend reconecta con cookie fresca en cada carga de página).
+   * servidor). Mismo criterio mínimo que JwtAuthGuard: usuario activo e
+   * iglesia no suspendida. A diferencia del HTTP (que revalida esto en cada
+   * request), un socket que sigue abierto no se corta a mitad de conexión si
+   * el usuario se desactiva o la iglesia entra en mora después de conectar —
+   * limitación aceptada, acotada por la vida del propio socket (el frontend
+   * reconecta con cookie fresca en cada carga de página).
    */
   async handleConnection(client: Socket): Promise<void> {
     try {
@@ -68,13 +69,11 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
         throw new Error('Sin token');
       }
 
-      const payload = await this.jwtService.verifyAsync<JwtPayload>(token, {
-        secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
-      });
+      const usuarioId = await this.supabaseJwtVerifier.verifyAndExtractUsuarioId(token);
 
       const usuario = await this.prisma.usuario.findUnique({
-        where: { id: payload.sub },
-        select: { activo: true, iglesia: { select: { estado: true } } },
+        where: { id: usuarioId },
+        select: { rol: true, iglesiaId: true, activo: true, iglesia: { select: { estado: true } } },
       });
 
       if (!usuario?.activo) {
@@ -85,12 +84,12 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
         throw new Error('Iglesia suspendida');
       }
 
-      if (payload.rol === Rol.SUPER_ADMIN) {
+      if (usuario.rol === Rol.SUPER_ADMIN) {
         await client.join(SUPERADMIN_ROOM);
-      } else if (payload.iglesiaId) {
-        await client.join(iglesiaRoom(payload.iglesiaId));
+      } else if (usuario.iglesiaId) {
+        await client.join(iglesiaRoom(usuario.iglesiaId));
       } else {
-        throw new Error('Payload sin iglesiaId ni rol SUPER_ADMIN');
+        throw new Error('Usuario sin iglesiaId ni rol SUPER_ADMIN');
       }
     } catch (error) {
       this.logger.warn(`Conexión rechazada: ${(error as Error).message}`);
@@ -103,11 +102,11 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
   }
 
   /**
-   * Mismo criterio que cookieExtractor de JwtStrategy, pero sobre el header
-   * crudo del handshake: cookie-parser solo engancha al servidor HTTP de
-   * Express, no a la conexión de socket.io. `handshake.auth.token` queda
+   * Mismo criterio que la extracción de cookie de JwtAuthGuard, pero sobre el
+   * header crudo del handshake: cookie-parser solo engancha al servidor HTTP
+   * de Express, no a la conexión de socket.io. `handshake.auth.token` queda
    * como alternativa para clientes que no puedan mandar la cookie httpOnly
-   * cross-site (mismo espíritu que el fallback Bearer de JwtStrategy).
+   * cross-site (mismo espíritu que el fallback Bearer de JwtAuthGuard).
    */
   private extractToken(client: Socket): string | null {
     const fromAuth = client.handshake.auth?.token as string | undefined;

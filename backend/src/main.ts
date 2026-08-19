@@ -7,7 +7,7 @@ import { resolveCorsOrigins } from './common/utils/cors-origins.util';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // Necesario para que req.cookies exista (lo leen JwtStrategy, JwtRefreshStrategy y CsrfMiddleware).
+  // Necesario para que req.cookies exista (lo leen JwtAuthGuard, AuthController#refresh y CsrfMiddleware).
   app.use(cookieParser());
 
   app.useGlobalPipes(

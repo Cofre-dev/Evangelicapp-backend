@@ -87,11 +87,4 @@ pasado y futuro, sigue siendo el de arriba: el campo `email` en vez de `username
 El resto (verificación de tokens, guard de permisos, garantías de rotación de sesión, esquema
 de cookies) es trabajo 100% interno del backend, ya en curso, sin ningún paso pendiente que
 dependa de que ustedes hagan algo.
-
-**Nota aparte (2026-08-14):** evalué si convenía cambiar cómo el Pastor da de alta a un
-Tesorero/Secretaria — Supabase ofrece un mecanismo donde le manda un correo directo a la
-persona para que ella misma defina su contraseña, en vez de que el Pastor comparta una
-temporal. Eso sí les tocaría a ustedes (una pantalla nueva para completar la invitación), así
-que decidimos con el fundador dejarlo fuera de esta fase — la pantalla de alta de equipo sigue
-exactamente igual que hoy, sin cambios. Si en algún momento se retoma como mejora de producto
-aparte, les aviso con su propio brief.
+  

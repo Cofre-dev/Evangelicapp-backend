@@ -296,7 +296,7 @@ export class IglesiasService {
 
   /**
    * Oculta la iglesia (bloquea login y sesiones activas de todo su equipo, ver
-   * AuthService/JwtStrategy). Solo disponible con 3+ días de mora — reforzado acá
+   * AuthService/JwtAuthGuard). Solo disponible con 3+ días de mora — reforzado acá
    * también, no solo en el frontend (ver DIAS_GRACIA_MORA).
    */
   async ocultar(id: string) {

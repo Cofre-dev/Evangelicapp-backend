@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { TipoEvento } from '@prisma/client';
 import { generateSecureToken } from '../../common/utils/generate-secure-token';
 import { MailService } from '../mail/mail.service';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateEventoDto } from './dto/create-evento.dto';
 import { UpdateEventoDto } from './dto/update-evento.dto';
@@ -13,6 +14,7 @@ export class EventosService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
+    private readonly whatsappService: WhatsAppService,
   ) {}
 
   async findAll(iglesiaId: string, from?: Date, to?: Date) {
@@ -179,12 +181,18 @@ export class EventosService {
    */
   private async notificarIntegrantes(
     iglesiaId: string,
-    evento: { id: string; titulo: string; descripcion: string | null },
+    evento: {
+      id: string;
+      titulo: string;
+      descripcion: string | null;
+      fechaInicio: Date;
+      ubicacion: string | null;
+    },
     creadoPorId: string,
   ): Promise<void> {
     const integrantes = await this.prisma.integrante.findMany({
       where: { iglesiaId },
-      select: { id: true, email: true },
+      select: { id: true, email: true, telefono: true, nombreCompleto: true },
     });
 
     if (integrantes.length === 0) {
@@ -194,6 +202,8 @@ export class EventosService {
     const invitaciones = integrantes.map((integrante) => ({
       integranteId: integrante.id,
       email: integrante.email,
+      telefono: integrante.telefono,
+      nombreCompleto: integrante.nombreCompleto,
       tokenConfirmacion: generateSecureToken(),
     }));
 
@@ -225,9 +235,13 @@ export class EventosService {
     // del evento intolerablemente lenta. Se dispara en paralelo con
     // Promise.allSettled y NO se espera (sin await) — un fallo acá no debe tumbar
     // la creación del evento, que ya quedó confirmada en el paso anterior.
+    //
+    // WhatsApp se dispara junto al email, nunca en su reemplazo (decisión explícita):
+    // mientras WHATSAPP_ACCESS_TOKEN no esté configurado, WhatsAppService usa un
+    // provider no-op y el email sigue siendo el único canal real — ver whatsapp.module.ts.
     try {
       void Promise.allSettled(
-        invitaciones.map((invitacion) =>
+        invitaciones.flatMap((invitacion) => [
           this.mailService.enviarConvocatoriaEvento({
             email: invitacion.email,
             tituloEvento: evento.titulo,
@@ -237,7 +251,16 @@ export class EventosService {
             nombreCreador,
             tokenConfirmacion: invitacion.tokenConfirmacion,
           }),
-        ),
+          this.whatsappService.enviarConvocatoriaEvento({
+            telefono: invitacion.telefono,
+            nombreIntegrante: invitacion.nombreCompleto,
+            tituloEvento: evento.titulo,
+            nombreIglesia: iglesia?.nombre ?? 'tu iglesia',
+            fecha: evento.fechaInicio,
+            ubicacion: evento.ubicacion,
+            tokenConfirmacion: invitacion.tokenConfirmacion,
+          }),
+        ]),
       );
     } catch (error) {
       this.logger.error(`Fallo al disparar las convocatorias del evento ${evento.id}`, error);

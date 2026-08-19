@@ -5,8 +5,8 @@
  * pero un cliente que hablara directo con la API podía seguir usando cualquier
  * endpoint de su rol indefinidamente sin cambiar la contraseña temporal.
  *
- * Compartida entre `JwtStrategy` (sesión real) y `SupabaseJwtAuthGuard` (Fase 7,
- * paso 4, todavía inerte) para que ambas listas nunca puedan divergir.
+ * Usada por `JwtAuthGuard` (Fase 7 de docs/supabase.md, corte final — antes vivía
+ * duplicada en `JwtStrategy` y `SupabaseJwtAuthGuard`, ahora es un solo guard).
  */
 export const MUST_CHANGE_PASSWORD_ALLOWLIST: ReadonlySet<string> = new Set([
   '/auth/change-password',

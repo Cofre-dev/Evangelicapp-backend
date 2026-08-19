@@ -780,3 +780,414 @@ implementación final (reemplazar de verdad `LocalStrategy`/`JwtStrategy` por el
 Supabase en `POST /auth/login`/`POST /auth/refresh`) — todavía sin autorizar, y sigue
 condicionado a probarlo de punta a punta contra el proyecto de prueba antes de tocar el login
 real (ver recomendación al inicio de la sección de Fase 7 en `docs/supabase.md`).
+
+## [2026-08-15 00:00] Nuevo documento: guion de venta (`evangelicapp.md`)
+
+**Cambios:** `evangelicapp.md` (nuevo, raíz del repo) — guion conversacional de un vendedor de
+EvangelicApp presentando la plataforma al equipo pastoral de una iglesia. Cubre los 5 módulos
+(Agenda, Finanzas como módulo estrella, Notas/Tareas, Integrantes, Ceremonias), seguridad
+(aislamiento multi-tenant, permisos delegables por módulo, bcrypt, refresh tokens revocables,
+CSRF, tokens públicos de un solo propósito) y personalización (logo, categorías/departamentos
+financieros propios, colores de eventos, planes Básico/Medio/Pro con sus topes reales de
+`common/constants/plan.ts`). Contenido verificado contra el schema de Prisma y las constantes de
+planes antes de escribir — no se inventó ninguna funcionalidad (ej. no se menciona pasarela de
+pago automática, porque hoy la confirmación de pago es manual, ver entrada del 2026-08-03).
+
+**Funcionalidad:** documento de referencia/marketing para conversaciones de venta con iglesias —
+no es documentación técnica ni de negocio como `README.md`/`CLAUDE.md`, es material de discurso
+comercial. Surgió de una conversación exploratoria sobre pivotar el producto a CRM genérico para
+pymes (sin cambios de código, solo análisis) en la que se concluyó que el ángulo más fuerte hoy
+sigue siendo el dominio actual (iglesias) por la fuerza real del módulo de Finanzas auditado.
+
+## [2026-08-15 15:30] WhatsApp Business Cloud API — primer canal, convocatoria a integrantes (junto al email, no en su reemplazo)
+
+Pedido del usuario tras analizar `informe.md` (mercado brasileño de SaaS eclesiástico): WhatsApp
+es el canal dominante en LatAm, muy por encima del email. El fundador ya había decidido de
+antemano (`docs/colaboradores-qr.md`, 2026-07-08) usar la **API oficial de WhatsApp Business
+(Meta Cloud API)**, nunca librerías no oficiales, por riesgo real de baneo del número. Alcance
+acotado explícitamente por el usuario a un solo flujo — convocatoria a integrantes — y con la
+instrucción explícita de **no eliminar el email hasta que WhatsApp esté listo**: ambos canales
+quedan activos en paralelo de forma permanente, no es un cutover.
+
+**Cambios — módulo nuevo `backend/src/modules/whatsapp/` (espeja el patrón de `mail/`):**
+- `providers/whatsapp-provider.interface.ts`: interfaz `WhatsAppProvider` con
+  `sendTemplateMessage(params)` — a diferencia de `EmailProvider.sendMail` (HTML libre), recibe
+  una plantilla estructurada (`templateName`, `languageCode`, `variables[]`), porque Meta exige
+  que todo mensaje iniciado por el negocio use una plantilla pre-aprobada, nunca texto libre.
+  Token de inyección `WHATSAPP_PROVIDER`.
+- `providers/meta-cloud-api-whatsapp.provider.ts`: implementación real — `POST` a
+  `https://graph.facebook.com/{WHATSAPP_API_VERSION}/{WHATSAPP_PHONE_NUMBER_ID}/messages` vía
+  `fetch` nativo de Node (sin dependencia nueva — el proyecto no tenía `axios`/`@nestjs/axios`,
+  y esta es la primera integración por HTTP crudo a un tercero del backend).
+- `providers/noop-whatsapp.provider.ts`: mismo criterio que `SupabaseAuthService` en modo no-op
+  (Fase 7 de `docs/supabase.md`) — sin `WHATSAPP_ACCESS_TOKEN`, loguea un warning una sola vez y
+  no hace nada. Nadie necesita credenciales de Meta para correr el backend local.
+- `whatsapp.service.ts`: `WhatsAppService.enviarConvocatoriaEvento(...)` — mismo shape de
+  parámetros que `MailService.enviarConvocatoriaEvento`, arma variables de plantilla en vez de
+  HTML. Try/catch propio (nunca lanza al llamador), mismo criterio best-effort que `MailService`.
+- `whatsapp.module.ts`: `useFactory` igual que `MailModule` — construye
+  `MetaCloudApiWhatsAppProvider` solo si `WHATSAPP_ACCESS_TOKEN` está seteado, si no
+  `NoopWhatsAppProvider`.
+- `common/utils/normalize-phone-e164.util.ts` (nuevo): `normalizarTelefonoE164(...)` — Meta exige
+  formato E.164 (`+56912345678`) y `Integrante.telefono` es texto libre a nivel de columna, sin
+  formato forzado. Limpia espacios/guiones, asume `+56` para un número chileno de 9 dígitos, deja
+  pasar si ya viene en E.164, devuelve `null` si no se puede normalizar — el llamador saltea solo
+  ese envío puntual, sin afectar al resto del batch ni al email de esa misma persona.
+
+**Cambios — wireado (único cambio a código de negocio existente):**
+- `eventos.service.ts#notificarIntegrantes`: junto al `mailService.enviarConvocatoriaEvento(...)`
+  que ya existía dentro del `Promise.allSettled` fire-and-forget, se agregó
+  `whatsappService.enviarConvocatoriaEvento(...)` para el mismo integrante, en el mismo batch
+  paralelo — la llamada a email no se tocó ni se removió. El select de `Integrante` ahora trae
+  también `telefono`/`nombreCompleto`, y la firma del `evento` recibido por el método privado se
+  amplió con `fechaInicio`/`ubicacion` (ya venían en el objeto real, solo faltaban en el tipo).
+- `agenda.module.ts`: importa `WhatsAppModule`.
+- `.env.example`: `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_API_VERSION`
+  (default `v21.0`), `WHATSAPP_TEMPLATE_CONVOCATORIA_EVENTO` (default `convocatoria_evento`),
+  todas opcionales — con las mismas vacías, el comportamiento no cambia respecto a hoy.
+
+**Verificado:** `tsc --noEmit`, `eslint` y `nest build` limpios. Arranque real del backend
+compilado (`node dist/main.js`) contra el `.env` local (sin `WHATSAPP_ACCESS_TOKEN` seteado):
+`WhatsAppModule dependencies initialized` sin errores de inyección de dependencias, seguido del
+resto del árbol de módulos y el mapeo completo de rutas — confirma que el modo no-op no rompe el
+arranque. El proceso terminó después por `PrismaClientInitializationError: Can't reach database
+server at localhost:5432` (Docker Desktop no estaba corriendo en esta sesión) — no relacionado a
+este cambio, mismo bloqueador que ya aparece en entradas anteriores de esta bitácora.
+
+**Pendiente — depende del usuario, no de más código:**
+- Envío real de punta a punta (con `Integrante` real, Postgres local levantado y las
+  credenciales de prueba de Meta que el usuario ya tiene en su `.env`) queda para cuando levante
+  su Postgres local — no se le pidieron las credenciales por chat, se agregan directo a su `.env`.
+- El usuario ya tiene una app de developers.facebook.com con access token y número de prueba
+  (mandó un WhatsApp de prueba a sí mismo), pero **falta crear y aprobar la plantilla
+  `convocatoria_evento`** en WhatsApp Manager (categoría Utility) antes de que un envío real
+  funcione — sin plantilla aprobada, la Graph API rechaza el mensaje aunque el token sea válido.
+- Para llegar a integrantes reales de una iglesia (no solo al propio número de prueba del
+  usuario) hace falta además un número de WhatsApp Business real + verificación de negocio de
+  Meta — tiene demora externa de días a semanas, conviene iniciarlo en paralelo.
+- Fuera de alcance de esta entrada (decidido explícitamente con el usuario): facturación
+  (`Usuario.telefono` del Manager es opcional, necesitaría fallback a solo-email) y predicadores
+  (`Predicador` no tiene campo de teléfono, requeriría migración de schema).
+
+## [2026-08-15 16:10] Nuevo documento: `docs/supabase-todo.md` — checklist de estado del plan de Supabase
+
+**Cambios:** `docs/supabase-todo.md` (nuevo) — checklist de seguimiento rápido de las 8 fases de
+`docs/supabase.md`: qué está hecho (Fases 1, 2, 3, 4, 5, y la base de la 7), qué está bloqueado
+(Fase 6, por modelo de negocio sin definir) y qué falta (el cutover final de la Fase 7 — sin
+autorizar todavía — y la Fase 8/RLS, que depende 100% de que la 7 esté cortada de verdad). Se
+detectó de paso que `docs/supabase.md` nunca marcó la Fase 4 (cron de recordatorios) como resuelta
+con una línea de "Actualización" — sí lo está (ver entrada del 2026-08-10), solo quedó sin anotar
+en el documento original; queda registrado en el nuevo TODO para no perder el dato.
+
+**Funcionalidad:** el usuario pidió un archivo de seguimiento del avance de Supabase mientras
+esperaba la aprobación de la plantilla de WhatsApp en Meta. `docs/supabase.md` es el plan
+detallado (paso a paso técnico de cada fase) pero es largo — este archivo nuevo es el
+complemento de lectura rápida (estado + qué sigue), sin duplicar el detalle técnico que ya vive
+en el documento original.
+
+## [2026-08-15 20:35] Fase 7 de docs/supabase.md: cutover final — login y refresh reales contra Supabase Auth
+
+Pedido del usuario: cortar de verdad la Fase 7. Hasta esta entrada, toda la infraestructura de
+Supabase Auth (espejo, verificación JWKS, guard con las 3 revalidaciones) existía en paralelo
+pero inerte — el login real seguía siendo 100% JWT/bcrypt propio. Antes de escribir código se
+investigó a fondo el sistema actual y la infraestructura ya construida (dos exploraciones en
+paralelo) para diseñar el corte, documentado en un plan aprobado explícitamente por el usuario
+(alcance: corte directo, sin feature flag de legacy/supabase — mantener ambos sistemas
+coexistiendo permanentemente era la complejidad que el proyecto pide evitar).
+
+**Hallazgo crítico de la investigación (no estaba anticipado en `docs/supabase.md`):** los
+refresh tokens de GoTrue son strings opacos, no JWT — a diferencia del access token. No hay nada
+que verificar localmente; la única forma de validar uno es presentárselo de verdad a GoTrue.
+`JwtRefreshStrategy`/`JwtRefreshGuard` (que verificaban el refresh token como un JWT firmado con
+`JWT_REFRESH_SECRET`) no podían adaptarse, se retiraron.
+
+**Hallazgo crítico #2:** `SupabaseAuthService#mirrorUsuario` solo creaba el espejo la primera
+vez — cualquier usuario que hubiera cambiado su contraseña después de ser espejado (`jperez` de
+seed, por ejemplo, con `mustChangePassword: true` de fábrica) tendría el espejo con la
+contraseña temporal vieja, y el cutover le habría roto el login. Resuelto con un fallback
+auto-sanador (ver diseño abajo) — verificado en vivo en la sección de pruebas.
+
+**Hallazgo crítico #3, encontrado durante la implementación (fuera del alcance original del
+plan):** `RealtimeGateway` (Fase 5, WebSockets) verificaba el `access_token` de forma
+independiente con `JwtService`/`JWT_ACCESS_SECRET` propio — se habría roto en cuanto el access
+token pasara a ser un JWT ES256 emitido por Supabase. Se corrigió en la misma pasada (ver
+cambios abajo), no quedó para después.
+
+**Cambios — `src/supabase/supabase-auth.service.ts`:**
+- Métodos nuevos: `signInWithPassword` (`grant_type=password` contra GoTrue vía `fetch` nativo,
+  mismo patrón que `MetaCloudApiWhatsAppProvider` — sin dependencia HTTP nueva; `null` en
+  credenciales inválidas, distinto de un error real de config/red, que se lanza), `refreshSession`
+  (`grant_type=refresh_token`), `syncPassword` (`admin.updateUserById`, corrige un espejo
+  desincronizado), `signOut` (`admin.signOut(accessToken, scope)`, best-effort — nunca lanza,
+  para que un hipo de Supabase no vuelva un logout en un 500).
+- Nueva env var `SUPABASE_AUTH_TEST_ANON_KEY` (legacy, formato JWT) — obtenida vía MCP
+  (`get_publishable_keys` contra el proyecto de prueba), no pegada a mano.
+
+**Cambios — `src/modules/auth/auth.service.ts`:**
+- `validateUser`: intenta `signInWithPassword` primero; si Supabase rechaza pero bcrypt local
+  confirma la contraseña, sincroniza (mirror si `supabaseUserId` es null, si no `syncPassword`)
+  y reintenta una sola vez — nunca emite sesión basada solo en bcrypt, porque los tokens reales
+  solo los emite Supabase. Devuelve `{ usuario, session }` (nuevo tipo `ValidatedLogin`).
+- `login`: arma la respuesta con los tokens de la `session` de Supabase, ya no con
+  `issueTokens` (eliminado, igual que `hashToken`).
+- `refreshTokens`: rota contra GoTrue en vez de la tabla `RefreshToken` local (rotación/detección
+  de reuso ahora las hace Supabase — decisión ya aceptada el 2026-08-14).
+- `logout`/`changePassword`: llaman a `supabaseAuth.signOut(accessToken, 'global')` en vez de
+  revocar `RefreshToken` locales — mismo efecto (cierra sesión en todos los dispositivos).
+  `changePassword` además sincroniza la nueva contraseña hacia Supabase (best-effort: si falla,
+  el próximo login se autosana igual).
+- Constructor: se quitan `JwtService`/`ConfigService` (ya no se firma JWT propio), se agrega
+  `SupabaseJwtVerifierService`.
+
+**Cambios — capa HTTP:**
+- `local.strategy.ts`: `validate` devuelve `ValidatedLogin` (`{ usuario, session }`), no solo
+  `Usuario`.
+- `auth.controller.ts`: `login` lee `{ usuario, session }` de `req.user`. `refresh` deja de usar
+  `JwtRefreshGuard` (no puede verificar un token opaco) — lee `req.cookies.refresh_token`
+  directo. `logout`/`change-password` ahora pasan el `access_token` de la cookie al service.
+- `common/guards/jwt-auth.guard.ts`: reescrito de `extends AuthGuard('jwt')` a
+  `implements CanActivate` — verifica vía JWKS (`SupabaseJwtVerifierService`), mismas 3
+  revalidaciones de siempre (`activo`, `iglesia SUSPENDIDA`, allowlist de
+  `mustChangePassword`), extrae el token de la cookie `access_token` con fallback a
+  `Authorization: Bearer`. Absorbe la lógica de `supabase-jwt-auth.guard.ts` (retirado) — ya no
+  tiene sentido mantener dos guards casi idénticos.
+- `auth.module.ts`: ya no registra `JwtStrategy`/`JwtRefreshStrategy`/`JwtModule`.
+
+**Cambios — `RealtimeGateway`/`RealtimeModule` (hallazgo #3):** el gateway ahora verifica el
+token con `SupabaseJwtVerifierService` (mismo servicio que `JwtAuthGuard`) y vuelve a consultar
+`rol`/`iglesiaId` frescos de la BD en vez de confiar en los claims del payload — mismo criterio
+que el guard HTTP. `RealtimeModule` ya no importa `JwtModule.register({})` (dejó de hacer falta).
+
+**Retirado:** `jwt.strategy.ts`, `jwt-refresh.strategy.ts`, `jwt-refresh.guard.ts`,
+`supabase-jwt-auth.guard.ts`. El modelo `RefreshToken` **no se borró** del schema — se dejó de
+escribir/leer, pero tirar la tabla queda como migración separada, después de confirmar que el
+corte funciona sin sobresaltos. Comentarios sueltos que referenciaban `JwtStrategy` (`main.ts`,
+`iglesia-suspendida.exception.ts`, `iglesias.service.ts`, `must-change-password-allowlist.ts`)
+actualizados para no quedar engañosos.
+
+**Verificado de punta a punta contra el servidor local (Postgres) y el proyecto real de prueba
+(`Backend-auth-test`), con curl real, no solo build:**
+- `tsc --noEmit`, `eslint`, `nest build` limpios.
+- Login de `jperez` (`pastor@demo.cl`) → `access_token` confirmado como JWT ES256 emitido por
+  `grcywqjcqwpbuekqbupj.supabase.co` (no HS256 propio), `refresh_token` confirmado como string
+  opaco corto (no JWT). `GET /auth/me` funciona con el token verificado por JWKS.
+  `GET /agenda/eventos` bloqueado 403 mientras `mustChangePassword: true`.
+- `POST /auth/refresh` rota las 3 cookies correctamente. Un refresh token basura/inválido
+  devuelve 401 limpio. **Nota de comportamiento distinta a la documentada originalmente:**
+  reintentar un refresh token recién rotado, dentro de una ventana corta (~10s), NO lo rechaza
+  como reuso — GoTrue tiene un período de gracia de reuso pensado para reintentos de red del
+  cliente, y devuelve la sesión vigente en vez de revocar todo. Es un comportamiento real de
+  GoTrue, no un bug de esta implementación — actualiza lo que `docs/supabase.md` paso 6 asumía
+  sobre "detección de reuso" (existe, pero no es instantánea como la versión local que reemplaza).
+- `PATCH /auth/change-password` con `jperez`: login con la contraseña vieja rechazado después
+  del cambio, login con la nueva funcionando directo (sin pasar por el fallback) — confirma que
+  `syncPassword` corrigió el espejo de verdad.
+- `POST /auth/logout` seguido de un intento de refresh con la misma cookie → 401. Confirma que
+  `signOut('global')` revoca la sesión en Supabase de verdad, no solo limpia cookies locales.
+- Login de `admin@evangelicapp.cl` (SUPER_ADMIN, `iglesiaId: null`) → sin crash en el chequeo de
+  `iglesia?.estado`, funciona igual que cualquier otro rol.
+- **Verificación orgánica del fallback auto-sanador:** se restauró la cuenta demo corriendo
+  `npm run prisma:seed` (mismo criterio que sesiones anteriores) — el seed resetea el hash local
+  a `Temporal123` pero no toca `supabaseUserId`, así que el espejo de Supabase quedó con la
+  contraseña que se había puesto en la prueba de `change-password`, desincronizado a propósito.
+  El siguiente login con `Temporal123` pasó por el fallback (bcrypt local acierta, Supabase
+  rechaza, se sincroniza, se reintenta) y funcionó — la primera vez que este mecanismo se probó
+  con una desincronización real, no simulada.
+- **No probado en esta pasada:** el camino de `IglesiaSuspendidaException` (lógica sin cambios,
+  se evitó mutar el estado de facturación de la iglesia demo sin necesidad) y una conexión real
+  de WebSocket contra `RealtimeGateway` (verificado por compilación + mismo patrón ya probado del
+  guard HTTP, no por un socket real conectado).
+
+**Pendiente:** con esto, el corte de la Fase 7 queda funcionalmente completo y probado en local.
+La Fase 8 (RLS) sigue bloqueada aparte por su propio caveat técnico (Prisma no abre conexiones
+"como el usuario autenticado" — ver `docs/supabase.md` paso 8.3), no depende de nada de esta
+entrada. Actualizar `docs/supabase-todo.md` para reflejar este cierre.
+
+## [2026-08-16 18:35] `DATABASE_URL` apunta a Supabase (se deja de usar Postgres de Docker) + fix: identidad de Supabase Auth desincronizada entre bases
+
+**Cambios — `DATABASE_URL`:** `backend/.env` pasa de Postgres local (Docker) al proyecto real de
+Supabase (`lkcgiqmgdefhxhckedga`), a pedido del usuario. Antes de cambiarlo se auditó el estado
+de esa base contra las migraciones locales (vía MCP de Supabase, sin necesitar la contraseña de
+la DB todavía):
+- Encontrada y corregida una fila corrupta en `_prisma_migrations` (`manager_usuario_accesos_modulo`
+  duplicada, una completada y otra con `finished_at: null` de un intento fallido el 2026-07-30) —
+  borrada por SQL directo (el cambio de esquema real de esa migración ya estaba aplicado
+  correctamente en la fila buena, confirmado contra el schema real antes de tocar nada).
+- Encontrada una tabla huérfana `password_reset_tokens` con su migración
+  (`20260804190424_add_password_reset_token`) aplicada en esa base pero sin modelo en
+  `schema.prisma`, sin migración local correspondiente, y sin ninguna mención en `FEATURES.md` —
+  el usuario no la reconoció; se eliminó (`DROP TABLE`) vía MCP para alinear la base real con el
+  código actual.
+- Con la base ya limpia y la contraseña real agregada al `.env` por el usuario, se corrieron
+  `prisma migrate status` y `prisma migrate deploy` (no vía MCP para esta parte — se intentó
+  primero replicar el checksum de Prisma a mano para insertar las filas de tracking por SQL, pero
+  el checksum calculado no coincidió con el real al verificarlo contra una migración ya aplicada;
+  usar el motor real de Prisma evita ese riesgo). Quedaron aplicadas las 3 migraciones que
+  faltaban, incluida `add_supabase_user_id_to_usuario` — crítica para todo el corte de la Fase 7
+  de la entrada anterior. `prisma migrate status` confirmó "Database schema is up to date!".
+
+**Bug real encontrado y corregido — identidad de Supabase Auth cruzada entre bases:** al probar
+el login contra la base real (con una cuenta real del usuario, no demo), `POST /auth/login`
+devolvía 200 pero la siguiente request (`GET /auth/me`) fallaba con 401 "Sesión inválida" y el
+frontend volvía a la pantalla de login. Causa raíz: el proyecto de prueba de Supabase Auth
+(`Backend-auth-test`) se comparte entre distintos backings de Postgres (local, y ahora Supabase)
+— una cuenta con el mismo email+contraseña ya existía ahí desde pruebas anteriores contra
+Postgres local, con `app_metadata.usuarioId` apuntando a una fila que no existe en la base de
+Supabase actual. `signInWithPassword` la autenticaba con éxito (contraseña correcta) sin pasar
+por el mecanismo de auto-sincronización de `AuthService#validateUser` (que solo cubría "Supabase
+rechaza pero bcrypt local acepta", no "Supabase acepta pero la identidad es de otra base").
+
+**Cambios:**
+- `supabase-auth.service.ts`: nuevo método `relinkUsuario(supabaseUserId, usuario)` —
+  `admin.updateUserById(supabaseUserId, { app_metadata: {...} })`, repunta una cuenta de Supabase
+  Auth ya existente hacia la fila real de `Usuario`.
+- `auth.service.ts#validateUser`: después de obtener cualquier sesión válida (por el camino
+  directo o por el fallback), compara `session.supabaseUserId` contra `usuario.supabaseUserId`;
+  si no coinciden, relinkea y persiste localmente. **Segundo hallazgo dentro del mismo fix:** el
+  primer intento de la corrección no alcanzaba — el `access_token` que ya se había obtenido antes
+  del relink quedaba con el `app_metadata` viejo horneado adentro (los JWT de Supabase son
+  estáticos, actualizar el usuario no reemite tokens ya entregados). Hubo que agregar una
+  reautenticación (`trySupabaseSignIn` de nuevo) después de relinkear, para obtener un access
+  token que sí reflejara el `app_metadata` corregido — confirmado con dos rondas de prueba real
+  antes de que funcionara.
+
+**Verificado con una cuenta real del usuario (`rojascofrem@gmail.com`, SUPER_ADMIN), no con datos
+demo:** reproducido el bug exacto por curl (200 en login, 401 en `/auth/me` inmediatamente
+después), aplicado el fix, confirmado que `GET /auth/me` responde 200 con los datos correctos
+(`id`, `rol: SUPER_ADMIN`, `iglesiaId: null`) y que `usuarios.supabaseUserId` quedó relinkeado
+correctamente en la base real.
+
+**Pendiente:** confirmar con el usuario que el login funciona también desde el frontend (no solo
+curl). El resto de las cuentas reales de esta base (`matias`, `reno`, `betsa`, `luis`, `israel`,
+`soto`, `matiascofre`) también tienen `supabaseUserId: null` hoy — cualquiera que se loguee por
+primera vez contra esta base pasará por el mismo mecanismo de reconciliación (esperado, no
+requiere acción manual por cuenta).
+
+## [2026-08-16 18:45] Fix: acciones de "confirma tu contraseña" fallaban con la contraseña correcta y expulsaban al usuario del sistema
+
+El usuario reportó que al cambiar la fecha de facturación (SuperAdmin) y reingresar su
+contraseña, el sistema lo expulsaba — y que escribir mal esa contraseña de confirmación también
+lo botaba del sistema en vez de mostrar un error puntual. Reproducido con su cuenta real
+(`rojascofrem@gmail.com`), con su autorización explícita para usar la contraseña solo en este
+diagnóstico.
+
+**Causa raíz #1 — `verifyPassword` seguía comparando contra el hash local, no contra Supabase:**
+`AuthService#verifyPassword` (usado por `ConfirmPasswordDto` en `PATCH /iglesias/:id/facturacion`
+y en el borrado de ceremonias/movimientos/departamentos) hacía `bcrypt.compare` directo contra
+`Usuario.password`. El corte de la Fase 7 (entrada del 2026-08-14) ya había resuelto este mismo
+problema para el login (`validateUser`), pero `verifyPassword` y `changePassword` quedaron sin
+tocar — un usuario que inicia sesión bien (porque Supabase Auth ya tiene la contraseña vigente,
+aunque el hash local esté desactualizado) podía fallar cualquier confirmación de contraseña con
+"Contraseña incorrecta" pese a escribir la contraseña correcta. Confirmado en vivo: la misma
+contraseña que acababa de funcionar para el login devolvía 401 en el `PATCH` de facturación.
+
+**Causa raíz #2 — 401 en vez de 403 para una confirmación fallida:** `verifyPassword` lanzaba
+`UnauthorizedException` (401), el mismo código que usa `JwtAuthGuard` cuando la sesión es
+inválida. Si el frontend trata cualquier 401 como "sesión inválida, cerrar sesión" (patrón común
+de interceptor global), escribir mal la contraseña de confirmación expulsaba al usuario del
+sistema en vez de mostrarle un error en el propio formulario.
+
+**Cambios — `backend/src/modules/auth/auth.service.ts`:**
+- Nuevo método privado `confirmarPassword(usuario, password)`: intenta Supabase primero
+  (`trySupabaseSignIn`, la misma fuente de verdad que usa el login), con fallback a bcrypt local
+  + resincronización si Supabase rechaza pero el hash local acierta — mismo patrón que
+  `validateUser`, reutilizado en vez de duplicado.
+- `verifyPassword` y `changePassword` ahora usan `confirmarPassword` en vez de `bcrypt.compare`
+  directo.
+- `verifyPassword` lanza `ForbiddenException` (403) en vez de `UnauthorizedException` (401) —
+  mismo criterio que ya usa `IglesiaSuspendidaException` para distinguir "autenticado pero
+  bloqueado por esto puntual" de "sesión inválida".
+
+**Verificado con la cuenta real del usuario, con su propia contraseña:**
+- `PATCH /iglesias/:id/facturacion` con la contraseña correcta → 200, fecha actualizada
+  (antes: 401 "Contraseña incorrecta" pese a ser correcta).
+- Mismo endpoint con una contraseña deliberadamente mala → 403 (antes: 401).
+- `GET /auth/me` inmediatamente después del intento fallido → sigue en 200, la sesión no se
+  invalidó por el intento de confirmación fallido.
+
+**Pendiente:** este fix es del lado del backend — si el frontend además tiene lógica que trata
+403 igual que 401 (no solo 401), habría que revisarla ahí también; no se pudo confirmar porque el
+repo de frontend vive aparte. El mismo patrón `confirmarPassword` beneficia automáticamente a
+todos los `ConfirmPasswordDto` existentes (ceremonias, movimientos financieros, departamentos),
+no solo a facturación — no debería hacer falta repetir este fix ahí.
+
+## [2026-08-16 19:00] Sincronización de documentación técnica: `README.md` y `docs/auth-cookies.md` desactualizados tras el corte de la Fase 7
+
+El usuario preguntó si una sesión nueva de Claude en este repo entendería todo lo avanzado —
+revisando `README.md` y `docs/auth-cookies.md` (el "cómo técnico" que referencia `CLAUDE.md`) se
+encontró que ambos seguían describiendo el sistema **anterior** al corte de la Fase 7: login por
+username, JWT propio firmado por este backend, refresh token como JWT, rotación/detección de
+reuso contra una tabla `RefreshToken` local, `JwtStrategy` (ya no existe, es `JwtAuthGuard`), y
+`README.md` además decía "Storage de logos es local (`uploads/`)" — desactualizado desde la Fase 1
+(2026-08-08), de antes de esta sesión. Ninguno de los dos quedaba objetivamente falso por un
+cambio silencioso — quedaron así porque las entradas de `FEATURES.md` documentan cada cambio en
+el momento, pero nadie había vuelto a pasar por los documentos de referencia a corregir las
+afirmaciones que esos cambios dejaban obsoletas.
+
+**Cambios — `README.md`:**
+- Tabla de stack: fila de Auth actualizada (Supabase Auth/GoTrue, no JWT propio); agregada fila de
+  WhatsApp.
+- Sección "Auth" reescrita: login por email, `access_token` es un JWT real de Supabase,
+  `refresh_token` es un string opaco (no JWT), `JwtAuthGuard` (no `JwtStrategy`), fallback
+  auto-sanador de `AuthService#validateUser`, y la distinción 403/401 de `verifyPassword`.
+- Tabla de módulos: agregadas filas `whatsapp`, `realtime`, `supabase` (antes no existían en la
+  tabla pese a llevar días/semanas en el código).
+- Sección "Base de datos": aclara que `DATABASE_URL` apunta al proyecto real de Supabase de forma
+  permanente (no un fallback), que esa base tiene datos reales de uso del equipo (no solo demo), y
+  que Docker quedó como opción para pruebas puntuales, no el flujo habitual.
+- Tabla de variables de entorno: agregadas todas las que faltaban (`SUPABASE_URL`/
+  `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_AUTH_TEST_*`, `WHATSAPP_*`, `MAIL_PROVIDER`/
+  `RESEND_API_KEY`) — la tabla solo tenía las variables del sistema original de JWT propio.
+  `JWT_ACCESS_SECRET`/`JWT_REFRESH_SECRET` se quitaron (ya no firman nada, Supabase emite los
+  tokens).
+- Sección "Migraciones de base de datos" reescrita: recomendaba `prisma migrate dev` directo,
+  peligroso ahora que `DATABASE_URL` apunta a la base compartida en vez de a un Postgres local
+  descartable — se corrige a `migrate dev --create-only` + revisión manual + `migrate deploy`,
+  con la advertencia de correr `migrate status` primero (ver la entrada de esta misma bitácora del
+  2026-08-16 sobre la fila de migración corrupta que se encontró así).
+- "Pendientes conocidos": quitados los 2 ítems ya resueltos (Storage local, `JwtStrategy`);
+  agregados el modelo `RefreshToken` sin usar (pendiente de migración para eliminarlo) y la Fase 8
+  (RLS) ya desbloqueada.
+
+**Cambios — `docs/auth-cookies.md`:**
+- Tabla de cookies: corregido que `refresh_token` es un string opaco de Supabase, no un JWT.
+- `POST /auth/logout`: corregido — revoca la sesión en Supabase (`admin.signOut`), no una tabla
+  `RefreshToken` local.
+- Nueva sección sobre `ConfirmPasswordDto` devolviendo 403, no 401.
+- Sección "Rotación de refresh token y condición de carrera entre tabs" reescrita: describía en
+  detalle un mecanismo (`updateMany` condicional, revocación total ante reuso) que ya no existe;
+  reemplazada por el comportamiento real de GoTrue (período de gracia de reuso ~10s), verificado
+  contra el servidor real en la entrada del 2026-08-15.
+
+**Cambios — `docs/supabase-todo.md`:** la fila de la Fase 7 ampliada para cubrir el trabajo de hoy
+(cambio de `DATABASE_URL` + los dos bugs de identidad/confirmación de contraseña encontrados y
+resueltos contra la base real).
+
+**Funcionalidad:** que una sesión nueva (de Claude o de cualquier persona del equipo) que lea
+`README.md`/`docs/auth-cookies.md` se lleve una imagen correcta del sistema actual, no la de hace
+varias fases. `FEATURES.md` sigue siendo la fuente de verdad cronológica completa, pero nadie
+debería tener que leer 1000+ líneas de bitácora para saber cómo funciona el login hoy — para eso
+están estos documentos de referencia, y ahora vuelven a decir la verdad.
+
+## [2026-08-19 00:00] Commit y push del trabajo acumulado (Fase 7 cutover, WhatsApp, fixes de auth, sync de docs)
+
+El usuario pidió commitear y pushear a `features`; había ~7 entradas de bitácora sin commitear
+desde el 2026-08-15 (todas las anteriores a esta). De paso se revisó el `git status` completo:
+
+- `.gitignore` tenía un cambio sin commitear que agregaba `.env.example` a los ignorados
+  (reemplazaba una línea en blanco) — parece accidental de una sesión anterior, ya que
+  `.env.example` es la plantilla que debe quedar versionada para el equipo. Se revirtió antes de
+  commitear.
+- Dos archivos sin trackear y sin mención en la bitácora se dejaron fuera del commit a pedido del
+  usuario: `evangelicapp-arquitectura.pdf` (632 KB, binario) y `backend/test-conn.sql` (archivo
+  suelto de prueba de conexión, solo contenía `SELECT 1;`). Siguen sin trackear en el working
+  directory por si el usuario los necesita después.
+
+**Cambios:** commit único con todo el trabajo ya documentado en las entradas anteriores de esta
+bitácora (WhatsApp Business Cloud API, cutover final de Fase 7 de Supabase Auth, cambio de
+`DATABASE_URL` a Supabase + fix de identidad desincronizada, fix de 401→403 en confirmación de
+contraseña, sync de `README.md`/`docs/auth-cookies.md`, documento `evangelicapp.md`, checklist
+`docs/supabase-todo.md`) + reversión del cambio accidental en `.gitignore`.
+
+**Funcionalidad:** ninguna funcionalidad nueva — deja el historial de git al día con el estado
+real del código, que ya llevaba varios días de trabajo sin commitear.

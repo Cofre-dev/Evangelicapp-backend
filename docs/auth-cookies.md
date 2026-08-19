@@ -4,15 +4,21 @@ Reemplaza el esquema anterior (`accessToken`/`refreshToken` en el body + `localS
 
 Implementado en 2026-07-08 — ver entrada correspondiente en [`FEATURES.md`](../FEATURES.md).
 
+**Actualización 2026-08-16 (Fase 7 de `docs/supabase.md`, corte final):** este contrato de
+cookies/CSRF **no cambió ni un poco** — mismos 3 nombres, mismos atributos, mismos endpoints. Lo
+que cambió es qué emite/valida el contenido de `access_token`/`refresh_token` por dentro: ahora es
+Supabase Auth (GoTrue), no un JWT propio firmado por este backend. Ver `FEATURES.md` para el
+detalle completo del corte.
+
 ## Cookies
 
 Las tres se setean/rotan juntas en `POST /auth/login` y `POST /auth/refresh`, y se limpian juntas en `POST /auth/logout` (ver `src/modules/auth/cookies.ts`).
 
 | Cookie | httpOnly | Secure | SameSite | Path | Vida | Contenido |
 |---|---|---|---|---|---|---|
-| `access_token` | Sí | Sí en prod (`NODE_ENV=production`) | `Lax` | `/` | `JWT_ACCESS_EXPIRATION` (15m default) | JWT firmado |
-| `refresh_token` | Sí | Sí en prod | `Lax` | `/auth/refresh` | `JWT_REFRESH_EXPIRATION` (7d default) | JWT firmado |
-| `csrf_token` | **No** (a propósito) | Sí en prod | `Lax` | `/` | igual que refresh | token opaco aleatorio (32 bytes) |
+| `access_token` | Sí | Sí en prod (`NODE_ENV=production`) | `Lax` en dev, `None` en prod | `/` | `JWT_ACCESS_EXPIRATION` (15m default) | JWT real de **Supabase Auth** (ES256, verificable vía JWKS) — ya no lo firma este backend |
+| `refresh_token` | Sí | Sí en prod | `Lax` en dev, `None` en prod | `/auth/refresh` | `JWT_REFRESH_EXPIRATION` (7d default) | **String opaco de Supabase — no es un JWT.** No hay nada que verificar localmente; se valida presentándoselo de nuevo a GoTrue (`grant_type=refresh_token`) |
+| `csrf_token` | **No** (a propósito) | Sí en prod | `Lax` en dev, `None` en prod | `/` | igual que refresh | token opaco aleatorio — 100% propio, no tiene relación con Supabase |
 
 - `refresh_token` tiene `Path=/auth/refresh` a propósito: el navegador no lo manda en ninguna otra request, reduciendo su superficie de exposición.
 - `Domain` no se fija (cookie host-only) — no hay necesidad de compartirla entre subdominios por ahora. Si backend y frontend terminan en subdominios distintos del mismo dominio raíz y hace falta compartir sesión, avisar para agregarlo.
@@ -28,10 +34,13 @@ Body: `{ email, password }` (Fase 7 de docs/supabase.md, 2026-08-14: antes era `
 Setea las 3 cookies. Exento de CSRF (no hay sesión previa que proteger).
 
 ### `POST /auth/refresh`
-Sin body. Lee `refresh_token` de su cookie. Responde `{ "ok": true }` y rota las 3 cookies (nuevo access, nuevo refresh, nuevo csrf). Responde `401` si el refresh token es inválido/expirado/reusado. **Requiere header `X-CSRF-Token`** igual a la cookie `csrf_token` (viaja porque `Path=/` la incluye en esta ruta).
+Sin body. Lee `refresh_token` de su cookie (string opaco, se lo presenta a GoTrue). Responde `{ "ok": true, "csrfToken": "..." }` y rota las 3 cookies (nuevo access, nuevo refresh, nuevo csrf). Responde `401` si el refresh token es inválido/expirado/reusado — ver nota sobre el período de gracia de reuso más abajo. **Requiere header `X-CSRF-Token`** igual a la cookie `csrf_token` (viaja porque `Path=/` la incluye en esta ruta).
 
 ### `POST /auth/logout`
-Requiere `access_token` válido. Revoca en BD todos los refresh tokens activos del usuario y limpia las 3 cookies. Requiere CSRF.
+Requiere `access_token` válido. Cierra la sesión del lado de Supabase (`admin.signOut(accessToken, 'global')` — revoca todas las sesiones de la cuenta, no solo la actual, mismo alcance que tenía antes revocar todos los `RefreshToken` locales) y limpia las 3 cookies. Requiere CSRF.
+
+### Confirmación de contraseña (`ConfirmPasswordDto`)
+Usado en acciones sensibles (borrar ceremonias/movimientos, corregir fecha de facturación) — no es parte del flujo de sesión, pero comparte el mismo mecanismo de verificación que el login (Supabase primero, bcrypt local como fallback con resincronización — ver `AuthService#confirmarPassword`). Responde **`403 Forbidden`**, no `401`, si la contraseña no coincide: el usuario sigue autenticado, solo falló esta confirmación puntual. Importante para el frontend — un interceptor que trate cualquier `401` como "cerrar sesión" no debe aplicar esa lógica a un `403` de esta ruta.
 
 ### Resto de endpoints protegidos
 Sin cambios de contrato — el `access_token` ahora se lee de la cookie automáticamente (`credentials: "include"` en el fetch). **Durante la transición** el header `Authorization: Bearer` sigue aceptado como fallback; se retirará cuando confirmen que ya no queda ningún cliente usándolo.
@@ -52,11 +61,25 @@ Por qué double-submit y no solo `SameSite=Lax`: `Lax` ya bloquea el CSRF clási
 
 ## Rotación de refresh token y condición de carrera entre tabs
 
-El refresh token rota en cada uso (`refresh_token` viejo queda `revoked` en BD, se emite uno nuevo). La rotación es atómica en el backend (`updateMany` condicional sobre `revoked: false`): si dos requests llegan casi al mismo tiempo con el mismo refresh token, exactamente una gana y rota; la otra recibe `401` limpio.
+**Actualizado 2026-08-16 — esta sección describía la rotación local (tabla `RefreshToken`
+propia); desde el corte de la Fase 7, la rotación y detección de reuso las hace Supabase del lado
+de GoTrue, no este backend.** El comportamiento real, verificado contra el servidor:
 
-Si más tarde alguien reintenta usar un refresh token que **ya fue rotado antes** (no la carrera del mismo instante, sino un reuso posterior), se interpreta como señal de robo: se revocan **todas** las sesiones activas del usuario y debe volver a loguearse en todos sus dispositivos/pestañas. Verificado manualmente: dos "tabs" simulados refrescando con el mismo token viejo terminan ambos deslogueados.
+- GoTrue tiene un **período de gracia de reuso** (~10 segundos): si se reintenta un refresh token
+  que se acaba de rotar dentro de esa ventana, NO lo trata como robo — devuelve la sesión vigente
+  otra vez, pensado justo para reintentos de red del cliente o dos tabs refrescando casi al mismo
+  tiempo. **Esto es distinto al sistema anterior**, que revocaba todo ante cualquier reuso, sin
+  ventana de gracia.
+- Fuera de esa ventana (un token efectivamente viejo/ya no vigente), GoTrue responde `401` al
+  refresh — el comportamiento exacto de revocación más allá de eso (si afecta solo esa sesión o
+  todas) es interno de GoTrue, no algo que este backend controle o pueda documentar con precisión
+  sin ver su código.
 
-**Implicancia para el frontend**: si dos tabs de la misma persona intentan refrescar en el mismo instante sin coordinarse, el que pierde la carrera fuerza el logout de ambos (falso positivo de "robo"). Recomendación concreta: coordinar el refresh entre tabs con la [Web Locks API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API) (`navigator.locks.request('refresh-token', async () => { ... })`) para que solo una tab dispare la request real y las demás esperen su resultado — evita que la carrera ocurra en primer lugar, en vez de intentar tolerarla del lado del backend a costa de debilitar la detección de robo.
+**Implicancia para el frontend**: sigue siendo buena práctica coordinar el refresh entre tabs con
+la [Web Locks API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API)
+(`navigator.locks.request('refresh-token', async () => { ... })`) para que solo una tab dispare la
+request real — pero el riesgo de falso-positivo por carrera entre tabs es menor ahora que existe
+el período de gracia de GoTrue.
 
 ## Timeline
 

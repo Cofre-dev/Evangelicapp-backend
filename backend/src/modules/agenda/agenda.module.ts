@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { MailModule } from '../mail/mail.module';
 import { RealtimeModule } from '../realtime/realtime.module';
+import { WhatsAppModule } from '../whatsapp/whatsapp.module';
 import { AsistenciasController } from './asistencias.controller';
 import { AsistenciasService } from './asistencias.service';
 import { EventosController } from './eventos.controller';
@@ -9,7 +10,7 @@ import { PredicadoresController } from './predicadores.controller';
 import { PredicadoresService } from './predicadores.service';
 
 @Module({
-  imports: [MailModule, RealtimeModule],
+  imports: [MailModule, WhatsAppModule, RealtimeModule],
   controllers: [EventosController, PredicadoresController, AsistenciasController],
   providers: [EventosService, PredicadoresService, AsistenciasService],
 })

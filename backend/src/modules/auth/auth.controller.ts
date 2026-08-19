@@ -9,26 +9,25 @@ import {
   Post,
   Req,
   Res,
+  UnauthorizedException,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { Usuario } from '@prisma/client';
 import type { Request, Response } from 'express';
+import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from '../../common/constants/auth-cookies';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
-import { AuthService, LoginResponse } from './auth.service';
+import { AuthService, LoginResponse, ValidatedLogin } from './auth.service';
 import { clearAuthCookies, setAuthCookies } from './cookies';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
 import { fotoPerfilMulterOptions } from './foto-perfil-upload.config';
-import { JwtRefreshGuard } from './guards/jwt-refresh.guard';
 import { LocalAuthGuard } from './guards/local-auth.guard';
-import { JwtRefreshPayload } from './strategies/jwt-refresh.strategy';
 
 /**
  * accessToken/refreshToken van solo en cookies httpOnly. csrfToken SÍ va en el
@@ -40,6 +39,11 @@ import { JwtRefreshPayload } from './strategies/jwt-refresh.strategy';
  */
 type LoginResponseBody = Omit<LoginResponse, 'accessToken' | 'refreshToken'>;
 
+function readCookie(req: Request, name: string): string | undefined {
+  const cookies = req.cookies as Record<string, string | undefined> | undefined;
+  return cookies?.[name];
+}
+
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -50,9 +54,12 @@ export class AuthController {
   /**
    * Login único para todos los roles, incluido el primer ingreso del pastor
    * con la contraseña temporal generada por el SuperAdmin. El body se valida
-   * con LoginDto; las credenciales en sí las verifica LocalStrategy. accessToken/
-   * refreshToken nunca viajan en el body: van en cookies httpOnly (ver ./cookies.ts).
-   * csrfToken sí viaja en el body (ver comentario de LoginResponseBody más arriba).
+   * con LoginDto; las credenciales en sí las verifica LocalStrategy (que ahora
+   * autentica contra Supabase Auth, con fallback auto-sanador — ver
+   * AuthService#validateUser). accessToken/refreshToken nunca viajan en el
+   * body: van en cookies httpOnly (ver ./cookies.ts), y ahora son los tokens
+   * que emite Supabase, no un JWT propio. csrfToken sí viaja en el body (ver
+   * comentario de LoginResponseBody más arriba) y sigue siendo 100% nuestro.
    */
   @Post('login')
   @HttpCode(HttpStatus.OK)
@@ -62,24 +69,33 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<LoginResponseBody> {
-    const { accessToken, refreshToken, ...body } = await this.authService.login(req.user as Usuario);
+    const { usuario, session } = req.user as ValidatedLogin;
+    const { accessToken, refreshToken, ...body } = await this.authService.login(usuario, session);
 
     setAuthCookies(res, this.config, { accessToken, refreshToken, csrfToken: body.csrfToken });
 
     return body;
   }
 
-  /** El refresh token se lee de su cookie (JwtRefreshStrategy), nunca del body. */
+  /**
+   * El refresh token de Supabase es un string opaco, no un JWT — no hay nada
+   * que verificar localmente (a diferencia del JwtRefreshStrategy que existía
+   * antes del corte), así que se lee la cookie directo y se le presenta a
+   * GoTrue (`grant_type=refresh_token`), que es quien de verdad valida si
+   * sigue vigente.
+   */
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  @UseGuards(JwtRefreshGuard)
   async refresh(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<{ ok: true; csrfToken: string }> {
-    const { accessToken, refreshToken, csrfToken } = await this.authService.refreshTokens(
-      req.user as JwtRefreshPayload,
-    );
+    const refreshTokenCookie = readCookie(req, REFRESH_TOKEN_COOKIE);
+    if (!refreshTokenCookie) {
+      throw new UnauthorizedException('Falta el refresh token');
+    }
+
+    const { accessToken, refreshToken, csrfToken } = await this.authService.refreshTokens(refreshTokenCookie);
 
     setAuthCookies(res, this.config, { accessToken, refreshToken, csrfToken });
 
@@ -89,8 +105,12 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
-  async logout(@CurrentUser() user: JwtPayload, @Res({ passthrough: true }) res: Response): Promise<void> {
-    await this.authService.logout(user.sub);
+  async logout(
+    @CurrentUser() user: JwtPayload,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<void> {
+    await this.authService.logout(user.sub, readCookie(req, ACCESS_TOKEN_COOKIE));
     clearAuthCookies(res, this.config);
   }
 
@@ -104,7 +124,7 @@ export class AuthController {
    * Ping de actividad para KPIs de "usuarios activos"/"tiempo de uso" (dashboards de
    * SuperAdmin y de manager/usuario). El frontend lo llama cada ~60s mientras la pestaña
    * está visible (Page Visibility API), una vez pasados los gates de mustChangePassword/
-   * onboarding — ver JwtStrategy#MUST_CHANGE_PASSWORD_ALLOWLIST.
+   * onboarding — ver JwtAuthGuard#MUST_CHANGE_PASSWORD_ALLOWLIST.
    */
   @Post('heartbeat')
   @HttpCode(HttpStatus.NO_CONTENT)
@@ -133,12 +153,17 @@ export class AuthController {
 
   /**
    * Usado tanto para el cambio forzado tras el primer login (mustChangePassword)
-   * como para un cambio voluntario posterior. Revoca las demás sesiones activas.
+   * como para un cambio voluntario posterior. Revoca las demás sesiones activas
+   * (ahora del lado de Supabase, ver AuthService#changePassword).
    */
   @Patch('change-password')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
-  async changePassword(@CurrentUser() user: JwtPayload, @Body() dto: ChangePasswordDto): Promise<void> {
-    await this.authService.changePassword(user.sub, dto);
+  async changePassword(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: ChangePasswordDto,
+    @Req() req: Request,
+  ): Promise<void> {
+    await this.authService.changePassword(user.sub, dto, readCookie(req, ACCESS_TOKEN_COOKIE));
   }
 }
