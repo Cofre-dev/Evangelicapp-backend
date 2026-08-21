@@ -2,8 +2,6 @@
     - Verificar la imagen que se envia en los correos
 2.- Comprar dominio y hosting
 3.- Mitigar las medidas de seguridad de sonarqube
-4.- [RESUELTO] Definir la estrategia comercial — 3 planes (Básico/Medio/Pro) con topes de usuarios y subdepartamentos de finanzas, fecha de facturación por iglesia y bloqueo por mora. Ver "Planes comerciales y facturación" en README.md.
-5.- Landing page de evangelicaap
 6.- Pasarela de pagos (para evangelicapp) — hoy los pagos se confirman a mano (`POST /iglesias/:id/marcar-pagada`), sin pasarela real todavía
 7.- Pasarela de pagos (Para donaciones de las iglesias)
 

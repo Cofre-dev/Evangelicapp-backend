@@ -1,14 +1,24 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { EstadoConfirmacionAsistencia } from '@prisma/client';
+import { runAsService } from '../../common/context/tenant-context';
 import { buildGoogleCalendarLink } from '../../common/utils/google-calendar-link';
 import { PrismaService } from '../../prisma/prisma.service';
 
+/**
+ * Fase 8 de docs/supabase.md (RLS): toda la clase es la ruta pública por token (ver
+ * AsistenciasController) — mismo criterio que PredicadoresService, cada método público
+ * corre en `runAsService` (bypass explícito de tenant).
+ */
 @Injectable()
 export class AsistenciasService {
   constructor(private readonly prisma: PrismaService) {}
 
   /** Público: lo que ve el integrante al abrir el link del email. */
   async getInvitacion(token: string) {
+    return runAsService(() => this.getInvitacionComoServicio(token));
+  }
+
+  private async getInvitacionComoServicio(token: string) {
     const asistencia = await this.prisma.asistenciaEvento.findUnique({
       where: { tokenConfirmacion: token },
       include: {
@@ -34,6 +44,10 @@ export class AsistenciasService {
   }
 
   async responder(token: string, respuesta: 'CONFIRMADO' | 'RECHAZADO') {
+    return runAsService(() => this.responderComoServicio(token, respuesta));
+  }
+
+  private async responderComoServicio(token: string, respuesta: 'CONFIRMADO' | 'RECHAZADO') {
     const asistencia = await this.prisma.asistenciaEvento.findUnique({ where: { tokenConfirmacion: token } });
 
     if (!asistencia) {

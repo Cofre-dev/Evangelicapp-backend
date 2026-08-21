@@ -35,8 +35,7 @@ const DIRECTORIO_SELECT = {
 const ORDEN_ROL: Record<Rol, number> = {
   [Rol.MANAGER]: 0,
   [Rol.USUARIO]: 1,
-  [Rol.MIEMBRO]: 2,
-  [Rol.SUPER_ADMIN]: 3,
+  [Rol.SUPER_ADMIN]: 2,
 };
 
 @Injectable()

@@ -112,7 +112,7 @@ export class IglesiasService {
       : undefined;
 
     try {
-      const { iglesia, pastor } = await this.prisma.$transaction(async (tx) => {
+      const { iglesia, pastor } = await this.prisma.withTenantTransaction(async (tx) => {
         const iglesia = await tx.iglesia.create({
           data: {
             nombre: dto.nombre,
@@ -260,19 +260,19 @@ export class IglesiasService {
 
     const fechaPago = new Date();
 
-    await this.prisma.$transaction([
-      this.prisma.iglesia.update({
+    await this.prisma.withTenantTransaction(async (tx) => {
+      await tx.iglesia.update({
         where: { id },
         data: {
           proximaFacturacion: sumarUnMes(iglesia.proximaFacturacion),
           ultimoPagoAt: fechaPago,
           estado: EstadoIglesia.ACTIVA,
         },
-      }),
-      this.prisma.pagoIglesia.create({
+      });
+      await tx.pagoIglesia.create({
         data: { iglesiaId: id, fecha: fechaPago, registradoPorId: superAdminId },
-      }),
-    ]);
+      });
+    });
 
     await this.emitIglesiaActualizada(id);
     return this.findOne(id);

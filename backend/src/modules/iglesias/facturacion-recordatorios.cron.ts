@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Rol } from '@prisma/client';
+import { runAsService } from '../../common/context/tenant-context';
 import { calcularEstadoFacturacion } from '../../common/utils/calcular-facturacion';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
@@ -38,6 +39,13 @@ export class FacturacionRecordatoriosCron {
 
   @Cron(CronExpression.EVERY_DAY_AT_9AM)
   async ejecutar(): Promise<void> {
+    // Fase 8 de docs/supabase.md (RLS): no hay request HTTP acá (corre por cron), así que
+    // no existe contexto de tenant salvo que se abra a mano. Bypass legítimo — este job
+    // necesita leer todas las iglesias a propósito, no una en particular.
+    return runAsService(() => this.ejecutarComoServicio());
+  }
+
+  private async ejecutarComoServicio(): Promise<void> {
     const iglesias = await this.prisma.iglesia.findMany({
       select: {
         id: true,

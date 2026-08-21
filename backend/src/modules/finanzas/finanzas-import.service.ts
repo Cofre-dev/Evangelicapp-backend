@@ -238,7 +238,7 @@ export class FinanzasImportService {
     departamentoNombre: string | null,
     filas: FilaValidada[],
   ): Promise<ResultadoImportacion> {
-    return this.prisma.$transaction(
+    return this.prisma.withTenantTransaction(
       async (tx) => {
         const categoriasExistentes = await tx.categoriaFinanciera.findMany({
           where: { iglesiaId, departamentoId: departamentoId ?? null },

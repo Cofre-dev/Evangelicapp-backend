@@ -165,6 +165,33 @@ Nota: si se quiere hacer vía Supabase (Storage transform / Edge Function on-upl
 3. **Caveat técnico importante:** Prisma no abre conexiones "como el usuario autenticado" — usa su propio rol/connection string. RLS basado en `auth.jwt()` asume que la query corre con el contexto de sesión de Supabase (vía PostgREST o `supabase-js`), no vía el pool de conexión directo que usa Prisma hoy. Hay que resolver esto explícitamente (ej. `set_config` por request, o aceptar que RLS solo protege el acceso vía API de Supabase y no vía Prisma) antes de asumir que "ya quedó protegido".
 4. `SUPER_ADMIN` necesita bypass de RLS (visibilidad cross-tenant) — definir un rol de servicio separado para sus queries.
 
+**Actualización (Fase 8 resuelta, 2026-08-20):** implementada de punta a punta — ver
+`docs/supabase-todo.md` para el estado y el detalle completo en `FEATURES.md`. Resumen de cómo
+se resolvió cada punto:
+
+- El caveat del punto 3 (Prisma no abre conexiones "como el usuario autenticado") se resolvió
+  con `set_config` por request — la opción que este documento ya anticipaba, no la alternativa
+  de aceptar que RLS solo protegiera el acceso vía API de Supabase (la app nunca usa PostgREST
+  para datos de negocio, así que esa alternativa hubiera dejado RLS sin ningún efecto real).
+  Mecanismo: `AsyncLocalStorage` por request + middleware de Prisma (`$use`) que antepone
+  `set_config` transaction-local a cada query — no `auth.jwt()` como sugería el paso 2 original
+  (la app nunca corre queries vía PostgREST/supabase-js contra estas tablas, así que `auth.jwt()`
+  nunca tendría nada que leer).
+- El punto 1 (custom claim `iglesia_id` vía Access Token Hook) **no hizo falta**: las policies
+  leen `current_setting('app.iglesia_id')`, fijado directamente por el backend en cada request
+  (mismo dato que ya resuelve `JwtAuthGuard` consultando `Usuario` fresco), no un claim del JWT.
+- El punto 4 (bypass de SUPER_ADMIN) se resolvió a nivel de policy (`current_setting('app.rol')
+  in ('SUPER_ADMIN', 'SERVICE')`), no con un rol de Postgres de servicio separado — más simple
+  dado que ya existe un solo rol de conexión (`app_runtime`, ver abajo).
+- **Hallazgo no anticipado por este documento:** el rol `postgres` de `DATABASE_URL` tiene
+  `BYPASSRLS` en este proyecto de Supabase — con ese rol, ninguna policy hubiera tenido efecto
+  nunca, sin importar `FORCE ROW LEVEL SECURITY`. Se creó un rol nuevo sin ese atributo
+  (`app_runtime`) y `DATABASE_URL` pasó a conectar como ese rol para el runtime de la API
+  (`postgres` se mantiene para migraciones). **Pendiente real:** el `DATABASE_URL` del backend
+  desplegado en Render no se actualizó (esta sesión no tiene acceso a ese dashboard) — hasta que
+  alguien lo actualice ahí, el backend en producción sigue conectando como `postgres` y las
+  policies no le aplican.
+
 ---
 
 ## Resumen de lo que NO depende de Supabase

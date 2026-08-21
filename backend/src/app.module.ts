@@ -1,8 +1,11 @@
 import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
+import { ThrottlerGuard, ThrottlerModule, minutes } from '@nestjs/throttler';
 import { CsrfMiddleware } from './common/middleware/csrf.middleware';
 import { RefreshOriginMiddleware } from './common/middleware/refresh-origin.middleware';
+import { TenantContextMiddleware } from './common/middleware/tenant-context.middleware';
 import { AccesosModule } from './modules/accesos/accesos.module';
 import { AgendaModule } from './modules/agenda/agenda.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -24,6 +27,11 @@ import { SupabaseModule } from './supabase/supabase.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),
+    // Techo global por IP para toda ruta que no tenga su propio @Throttle() más
+    // estricto (ver AuthController, PredicadoresController, AsistenciasController,
+    // IntegrantesRegistroController) — pensado para tráfico normal de la app
+    // autenticada, no como protección fina de un endpoint puntual.
+    ThrottlerModule.forRoot([{ name: 'default', ttl: minutes(1), limit: 120 }]),
     PrismaModule,
     SupabaseModule,
     RealtimeModule,
@@ -41,9 +49,15 @@ import { SupabaseModule } from './supabase/supabase.module';
     IntegrantesModule,
     CeremoniasModule,
   ],
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
+    // Fase 8 de docs/supabase.md (RLS): tiene que correr antes que cualquier guard —
+    // arranca el AsyncLocalStorage que JwtAuthGuard/LocalAuthGuard pueblan con la
+    // identidad real apenas la resuelven (ver tenant-context.ts).
+    consumer.apply(TenantContextMiddleware).forRoutes('*');
+
     consumer
       .apply(CsrfMiddleware)
       .exclude(

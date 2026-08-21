@@ -1191,3 +1191,206 @@ contraseña, sync de `README.md`/`docs/auth-cookies.md`, documento `evangelicapp
 
 **Funcionalidad:** ninguna funcionalidad nueva — deja el historial de git al día con el estado
 real del código, que ya llevaba varios días de trabajo sin commitear.
+
+## [2026-08-20 19:15] Fase 8 de docs/supabase.md: RLS atada al contexto de tenant (última fase del plan de Supabase)
+
+Implementación completa de Row Level Security en Postgres como segunda capa de defensa del
+aislamiento multi-tenant, además del filtro que ya hace cada query de la aplicación por
+`iglesiaId`. Docs/supabase.md exigía resolver primero un caveat técnico antes de escribir
+cualquier policy: Prisma no abre conexiones "como el usuario autenticado" — usa un
+`PrismaClient` singleton con un único connection string, compartido por todo el backend.
+
+**Hallazgo no anticipado por el plan original, resuelto en el camino:** el rol `postgres` de
+`DATABASE_URL` en este proyecto de Supabase tiene el atributo `BYPASSRLS` (confirmado por
+query — no es superusuario, pero Supabase se lo otorga igual). Con ese rol, activar RLS no
+habría cambiado nada: Postgres ignora las policies para cualquier rol con `BYPASSRLS`,
+`FORCE ROW LEVEL SECURITY` incluido. Se creó un rol nuevo, `app_runtime` (sin `BYPASSRLS`, sin
+superusuario, solo `SELECT/INSERT/UPDATE/DELETE` sobre `public`; `postgres` sigue siendo el
+dueño de las tablas y el rol para migraciones) y `DATABASE_URL` en `backend/.env` ahora conecta
+como ese rol. **Pendiente real: alguien con acceso al dashboard de Render tiene que actualizar
+`DATABASE_URL` ahí también** — esta sesión no tiene ese acceso, así que el backend desplegado
+sigue conectando como `postgres` (sin protección real de RLS) hasta que se haga ese cambio.
+
+**Mecanismo (código, `backend/src/`):**
+- `common/context/tenant-context.ts`: `AsyncLocalStorage` con `usuarioId`/`iglesiaId`/`rol` por
+  request, más `runAsService()` (bypass explícito y acotado, rol sentinel `'SERVICE'`).
+- `common/middleware/tenant-context.middleware.ts`: arranca el contexto (vacío = anónimo,
+  fail-closed) antes que cualquier guard, registrado en `app.module.ts`.
+- `prisma/prisma.service.ts`: middleware de Prisma (`$use`, no `$extends` — decisión
+  consciente, ver comentario en el archivo: extensions hubiera obligado a cambiar el tipo/token
+  inyectado en los ~30 archivos que hacen `constructor(private readonly prisma: PrismaService)`;
+  `$use` está deprecada a favor de extensions pero sigue soportada en la v5.x instalada)
+  antepone `set_config` transaction-local a cada operación. Nuevo método
+  `withTenantTransaction()` para los 8 sitios que ya abrían su propia transacción interactiva
+  (`iglesias.service.ts` ×2, `bautizos/presentaciones/defunciones/matrimonios.service.ts`,
+  `accesos.service.ts`, `finanzas-import.service.ts`, `onboarding.service.ts`) — evita el caso
+  que Prisma advierte como roto ("explicitly running transactions with the extended client may
+  not work as intended") fijando `set_config` una sola vez y marcando `inManagedTransaction` en
+  el contexto para que el middleware no vuelva a envolver cada operación dentro.
+- `JwtAuthGuard`/`RealtimeGateway#handleConnection`: pueblan el contexto con la identidad real
+  apenas la resuelven — ambos resuelven primero un bootstrap por `usuarioId` (antes de conocer
+  `iglesiaId`), que la policy de `usuarios` permite vía auto-lectura por `id`.
+- Bypass explícito (`runAsService`, rol `'SERVICE'`) en los únicos puntos que legítimamente no
+  tienen identidad de tenant: `AuthService#validateUser` (login, antes de resolver quién es),
+  `AuthService#refreshTokens`/`login` (usan el contexto real una vez que ya lo conocen, no
+  bypass), las 3 rutas 100% públicas por token (`PredicadoresService`, `AsistenciasService`,
+  `IntegrantesService#getInvitacion`/`registrar`) y `FacturacionRecordatoriosCron` (cruza todas
+  las iglesias a propósito).
+
+**Migración SQL** (`backend/prisma/migrations/20260820181542_enable_rls_tenant_isolation/`):
+`ENABLE`+`FORCE ROW LEVEL SECURITY` y una policy `tenant_isolation` en las 16 tablas con
+`iglesiaId` (o `id` para `iglesias` misma), con casos especiales para `usuarios`/
+`sesiones_actividad` (`iglesiaId` nullable + auto-lectura por id propio) y `predicadores`/
+`asistencias_evento` (sin columna `iglesiaId`, scoped vía `EXISTS` contra `eventos`). 3
+funciones helper (`app_iglesia_id()`, `app_usuario_id()`, `app_is_privileged()`) con
+`search_path` fijo (get_advisors marcó WARN sin eso). `refresh_tokens` queda fuera a propósito
+(tabla ya no usada tras el cutover de Fase 7, pendiente de DROP aparte).
+
+**Cómo se aplicó, y qué falta reconciliar:** este entorno no tiene conectividad de red directa
+a la base (`prisma migrate status` falla con P1001 incluso sin sandbox — confirmado que es una
+restricción real del entorno, no de permisos), así que no se pudo generar la migración con
+`prisma migrate dev --create-only` ni aplicarla con `prisma migrate deploy`. Se aplicó a mano
+vía las herramientas MCP de Supabase (`execute_sql` para crear el rol `app_runtime`,
+`apply_migration` para las policies) y se escribió el archivo `.sql` correspondiente en
+`backend/prisma/migrations/` para que el historial del repo quede completo. **Pendiente:**
+`_prisma_migrations` en la base real no sabe de este cambio — correr
+`prisma migrate resolve --applied 20260820181542_enable_rls_tenant_isolation` la próxima vez
+que alguien tenga conectividad directa (mismo criterio que ya pedía `docs/supabase-todo.md`
+tras el incidente de la fila de migración corrupta).
+
+**Verificación realizada:** `npx tsc --noEmit` limpio. Verificación de RLS a nivel SQL
+(simulando `SET ROLE app_runtime` + `set_config` de los 3 escenarios) contra la base real:
+(1) como MANAGER de una iglesia, una lectura sin filtro de `integrantes`/`usuarios` solo trae
+filas de esa iglesia; un intento explícito de leer o actualizar otra iglesia devuelve 0 filas
+aunque el query lo pida a propósito; (2) como `SUPER_ADMIN`, la misma lectura trae las 8 filas
+de `usuarios` de las 3 iglesias de seed (confirmado contra el conteo real sin RLS); (3) sin
+ningún contexto seteado, la lectura trae 0 filas (fail-closed). `get_advisors(security)` limpio
+salvo hallazgos pre-existentes no relacionados (un trigger `rls_auto_enable()` que ya existía
+en el proyecto de una sesión anterior, y RLS sin policy en `_prisma_migrations`/
+`refresh_tokens`, ambas inofensivas — ver detalle en la conversación).
+
+**No verificado en esta sesión, pendiente de confirmar con la app corriendo de verdad:** este
+mismo entorno no puede levantar el backend contra la base real (mismo P1001 de arriba), así que
+el mecanismo se probó a nivel SQL y de compilación, pero NO se probó end-to-end con requests
+HTTP reales (login, las 3 rutas públicas por token, el dashboard de SuperAdmin, el cron, el
+WebSocket). Alguien con conectividad directa a la base (local o Render, una vez actualizado
+`DATABASE_URL` ahí) debería correr ese smoke test antes de confiar en que ningún flujo se rompió.
+
+**Con esto, las 8 fases de docs/supabase.md quedan resueltas.** Actualizados
+`docs/supabase.md` y `docs/supabase-todo.md` en la misma sesión.
+
+## [2026-08-21 00:00] Eliminación del rol MIEMBRO + prompt de consentimiento (Ley 21.719) para el frontend
+
+Dos pedidos del usuario en la misma sesión de consulta técnica (arquitectura, hosting,
+git workflow): (1) sacar `MIEMBRO` del sistema — la decisión de producto es que solo
+existen tres roles reales: `SUPER_ADMIN`, `MANAGER` y `USUARIO`; (2) dejar un prompt
+reutilizable para que el equipo de frontend agregue una casilla de consentimiento en el
+censo de integrantes, de cara a la Ley 21.719 de protección de datos personales (Chile),
+que entra en vigencia el 1 de diciembre de 2026.
+
+**Cambios — eliminación de `MIEMBRO`:**
+- Antes de tocar nada, se confirmó contra la base real (`execute_sql`) que 0 filas de
+  `usuarios` tenían `rol = 'MIEMBRO'` — la eliminación no requería migrar datos.
+- `prisma/schema.prisma`: sacado `MIEMBRO` del enum `Rol`.
+- `usuarios.service.ts`: sacada la entrada de `MIEMBRO` en `ORDEN_ROL` (orden de
+  presentación del directorio del equipo); renumerado `SUPER_ADMIN` de 3 a 2.
+- `auth.service.ts`, `jwt-payload.interface.ts`, `dashboard.controller.ts`: comentarios
+  que mencionaban `MIEMBRO` como caso especial, corregidos (ninguno tenía código real
+  que dependiera del valor, solo prosa desactualizada).
+- Nueva migración `20260821035755_remove_rol_miembro`: Postgres no soporta `DROP VALUE`
+  en un enum, así que se recreó el tipo (`RENAME` a `Rol_old` → `CREATE TYPE` nuevo sin
+  `MIEMBRO` → `ALTER COLUMN ... USING` → `DROP TYPE Rol_old`). Se verificó primero que
+  ninguna función/policy de RLS (Fase 8, migración anterior) dependiera del tipo `Rol` —
+  `app_is_privileged()` compara un `current_setting` de texto contra literales, no el
+  enum — así que este cambio no interactúa con la Fase 8. Aplicada a mano vía MCP de
+  Supabase (mismo motivo que la migración de RLS: este entorno no tiene conectividad
+  directa a la base). Verificado post-aplicación: `enum_range(NULL::"Rol")` devuelve
+  exactamente `('SUPER_ADMIN','MANAGER','USUARIO')`, y las 8 filas de `usuarios`
+  mantuvieron su rol intacto. **Pendiente, igual que con la migración de RLS:** correr
+  `prisma migrate resolve --applied 20260821035755_remove_rol_miembro` la próxima vez
+  que alguien tenga conectividad directa a la base.
+- `README.md`: sacada la fila de `MIEMBRO` de la tabla de roles y el ítem correspondiente
+  de "Pendientes conocidos"; de paso, corregido el ítem de RLS ahí mismo, que todavía
+  decía "puede empezar ahora" — ya está implementada (ver entrada anterior), solo falta
+  que `DATABASE_URL` en Render apunte al rol `app_runtime` en vez de `postgres`.
+- `AGENTS.md`: actualizada la lista de roles actuales, sin `MIEMBRO`.
+- `CLAUDE.md`: sacada la fila de `MIEMBRO` de la tabla de roles de negocio, con una nota
+  fechada explicando la decisión. Se dejó sin tocar el resto de esa tabla (nombres
+  `PASTOR`/`TESORERO`/`SECRETARIA`), que sigue sin coincidir con los nombres técnicos
+  reales (`MANAGER`/`USUARIO`) — es una inconsistencia más amplia, ya señalada al
+  usuario, que no formaba parte de este pedido.
+- Verificación: `npx prisma generate` + `npx tsc --noEmit` limpio; sin tests que
+  mencionaran `MIEMBRO`.
+
+**Cambios — `prompt.md` (nuevo, raíz del repo):** prompt autocontenido para una sesión de
+Claude Code sobre el repo del frontend — agrega un checkbox obligatorio (desmarcado por
+defecto, bloquea el envío) antes del botón de enviar del formulario público de censo por
+QR, con link a una política de privacidad todavía inexistente (URL placeholder
+configurable). Incluye el contrato real del endpoint `POST /integrantes/registro/:qrToken`
+(campos exactos del DTO) y advierte explícitamente que el `ValidationPipe` global
+(`forbidNonWhitelisted: true`) rechaza cualquier campo nuevo en el body — por eso el
+prompt indica que el consentimiento debe implementarse como gate 100% de cliente, sin
+mandar nada nuevo al backend todavía. Nota aparte (fuera del prompt): falta un cambio de
+backend separado para persistir *cuándo* y *qué versión* de la política aceptó cada
+`Integrante` — sin eso el checkbox no es evidencia real de consentimiento ante una
+fiscalización; no se implementó en esta pasada porque el pedido fue explícitamente para
+frontend.
+
+**Funcionalidad:** el sistema queda con exactamente los roles que el negocio quiere hoy
+(sin una opción `MIEMBRO` que nunca tuvo uso ni endpoints), y el equipo de frontend tiene
+instrucciones precisas y accionables para cumplir con el requisito de consentimiento de
+la Ley 21.719 antes de su entrada en vigencia (1 de diciembre de 2026).
+
+## [2026-08-21 00:20] Fix: la Fase 8 (RLS) rompía el backend al arrancar — `$use` no sirve para batchear con `$transaction`
+
+El usuario corrió `nest start` localmente (con conectividad real a la base, a diferencia
+de la sesión que implementó la Fase 8) y el backend crasheaba al primer intento de query
+con `RangeError: Maximum call stack size exceeded` y, en el error de fondo real: `Error:
+All elements of the array need to be Prisma Client promises. Hint: Please make sure you
+are not awaiting the Prisma client calls you intended to pass in the $transaction
+function.`, apuntando a `prisma.service.ts`.
+
+**Causa real:** `PrismaService` usaba `$use` (Client Middleware) para anteponer
+`set_config` a cada query, batcheando `[this.$executeRaw(set_config), next(params)]` en
+un `this.$transaction([...])`. Eso está mal de raíz: `next(params)` en `$use` YA dispara
+la ejecución de la query (devuelve una Promise nativa en curso), no la promesa perezosa
+que `$transaction([...])` necesita para poder batchear — de ahí el error de Prisma. La
+decisión de usar `$use` en vez de `$extends` (Client Extensions, el mecanismo que Prisma
+sí soporta para este patrón) se tomó explícitamente en la entrada anterior para evitar
+tener que cambiar el token/tipo inyectado en los ~30 archivos que hacen
+`constructor(private readonly prisma: PrismaService)` — esa preocupación era válida, pero
+la solución elegida (`$use`) no funciona para lo que se necesitaba.
+
+**Fix:** reescrito `prisma.service.ts` para usar `$extends` de verdad —
+`$allOperations({ args, query })` sí entrega en `query(args)` la promesa perezosa
+correcta, confirmado contra el patrón oficial de Prisma
+(`prisma/prisma-client-extensions/row-level-security`). Como `$extends` devuelve un
+objeto nuevo (no `this` modificado in-place), `PrismaModule` cambió de
+`providers: [PrismaService]` a un provider `useFactory` que entrega ese objeto bajo el
+mismo token `PrismaService` — ningún otro archivo del backend cambió su forma de
+inyectarlo. Para que TypeScript acepte ese objeto como del tipo `PrismaService` sin forzar
+un cast en cada sitio, `PrismaService` pasó de ser una subclase de `PrismaClient` a una
+clase vacía (`class PrismaService {}`) fusionada por declaración con una interfaz
+(`interface PrismaService extends ExtendedPrismaClient {}`) que le da la forma completa
+del cliente extendido — patrón que ESLint marca como "unsafe declaration merging"
+(hay una razón real detrás de esa regla) pero es intencional y acotado a este único
+archivo, documentado con comentarios y `eslint-disable` explícitos en el propio código.
+`withTenantTransaction` (los 8 sitios con transacción interactiva propia) no necesitó
+cambios de lógica: ya usaba el cliente `raw` sin pasar por el middleware, así que nunca
+tuvo el bug — solo se movió de método de instancia a método del componente `client` de la
+extensión.
+
+**Verificación:** `npx tsc --noEmit` y `npx eslint "src/**/*.ts"` limpios tras el cambio.
+Sigue sin poder probarse contra la base real desde esta sesión (mismo P1001 de siempre) —
+el usuario es quien tiene que confirmar que ahora sí levanta y sirve requests.
+
+**De paso, se registra que el repo tuvo trabajo concurrente de otra sesión/persona
+mientras esta se ejecutaba** (retiro del rol `MIEMBRO` de `schema.prisma`/docs, prompt de
+consentimiento de datos para el frontend) — ya documentado en la entrada anterior de esta
+misma bitácora; se menciona acá solo porque `git status` lo mostró junto a este fix y vale
+la pena que quede claro que esta entrada NO toca nada de eso.
+
+**Funcionalidad:** sin este fix, absolutamente ninguna request a la API iba a funcionar
+—el crash pasaba en la primera query que cualquier request disparara— así que era un
+bug bloqueante de severidad máxima para todo lo entregado en la Fase 8, encontrado antes
+de llegar a producción gracias a que el usuario probó el arranque real del backend.

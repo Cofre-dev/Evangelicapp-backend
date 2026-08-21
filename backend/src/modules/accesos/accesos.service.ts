@@ -48,12 +48,12 @@ export class AccesosService {
   ) {
     await this.findUsuarioAsignableOrThrow(iglesiaId, usuarioId);
 
-    await this.prisma.$transaction([
-      this.prisma.accesoModulo.deleteMany({ where: { usuarioId } }),
-      this.prisma.accesoModulo.createMany({
+    await this.prisma.withTenantTransaction(async (tx) => {
+      await tx.accesoModulo.deleteMany({ where: { usuarioId } });
+      await tx.accesoModulo.createMany({
         data: modulos.map((modulo) => ({ usuarioId, iglesiaId, modulo, otorgadoPorId })),
-      }),
-    ]);
+      });
+    });
 
     return this.findUsuariosConAccesos(iglesiaId).then((usuarios) =>
       usuarios.find((u) => u.id === usuarioId),

@@ -9,6 +9,7 @@ import {
 import { EstadoIglesia, Rol } from '@prisma/client';
 import { Server, Socket } from 'socket.io';
 import { ACCESS_TOKEN_COOKIE } from '../../common/constants/auth-cookies';
+import { runWithTenantContext } from '../../common/context/tenant-context';
 import { resolveCorsOrigins } from '../../common/utils/cors-origins.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseJwtVerifierService } from '../../supabase/supabase-jwt-verifier.service';
@@ -71,10 +72,15 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
 
       const usuarioId = await this.supabaseJwtVerifier.verifyAndExtractUsuarioId(token);
 
-      const usuario = await this.prisma.usuario.findUnique({
-        where: { id: usuarioId },
-        select: { rol: true, iglesiaId: true, activo: true, iglesia: { select: { estado: true } } },
-      });
+      // Fase 8 de docs/supabase.md (RLS): este socket no pasa por TenantContextMiddleware
+      // (eso es HTTP-only) — hay que abrir el contexto de tenant a mano acá, mismo patrón
+      // bootstrap-por-id que usa JwtAuthGuard (ver tenant-context.ts).
+      const usuario = await runWithTenantContext({ usuarioId }, () =>
+        this.prisma.usuario.findUnique({
+          where: { id: usuarioId },
+          select: { rol: true, iglesiaId: true, activo: true, iglesia: { select: { estado: true } } },
+        }),
+      );
 
       if (!usuario?.activo) {
         throw new Error('Usuario inactivo');

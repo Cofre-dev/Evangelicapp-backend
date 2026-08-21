@@ -40,7 +40,7 @@ Setup local: `docker compose up -d postgres` (Postgres 16 local), `cp .env.examp
 - Login por **username** (no email). Tokens en cookies `httpOnly`, nunca en body/localStorage. CSRF: double-submit — toda request mutante con cookie de sesión debe reflejar el valor en `X-CSRF-Token`.
 - Access token 15m + refresh 7d con rotación atómica (reuso = posible robo, revoca todas las sesiones). Refresh tokens hasheados (SHA-256) en BD.
 - `JwtStrategy#validate` revalida `usuario.activo` e iglesia `estado` en **cada** request. `JwtStrategy` acepta también `Authorization: Bearer` como fallback de transición.
-- Roles actuales: `SUPER_ADMIN` (global, `iglesiaId: null`), `MANAGER`, `USUARIO`, `MIEMBRO` (sin endpoints). **No existen** `PASTOR`/`TESORERO`/`SECRETARIA`.
+- Roles actuales: `SUPER_ADMIN` (global, `iglesiaId: null`), `MANAGER`, `USUARIO`. **No existen** `PASTOR`/`TESORERO`/`SECRETARIA`/`MIEMBRO` (este último se eliminó del enum `Rol` el 2026-08-20 — nunca tuvo endpoints propios).
 - Autorización: `JwtAuthGuard` + `RolesGuard` + `@Roles(...)`; módulos delegables (Agenda, Finanzas, Ceremonias, Integrantes) agregan `ModuloAccessGuard` + `@Modulo(...)` — USUARIO solo si MANAGER otorgó `AccesoModulo`. `Notas` no es delegable (MANAGER, salvo `mis-tareas` y `marcar-hecha`).
 - Rutas públicas sin guard (token de un solo uso en la URL): `agenda/predicadores/:token`, `agenda/asistencias/:token`, `integrantes/registro/:qrToken`.
 - Errores de constraint única de Prisma (`P2002`) se traducen con `translateUniqueConstraintError`.

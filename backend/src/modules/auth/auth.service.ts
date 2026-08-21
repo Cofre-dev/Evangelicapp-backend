@@ -3,6 +3,7 @@ import { EstadoIglesia, ModuloSistema, PlanIglesia, Rol, Usuario } from '@prisma
 import * as bcrypt from 'bcrypt';
 import { randomUUID } from 'crypto';
 import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
+import { runAsService, updateTenantContext } from '../../common/context/tenant-context';
 import { IglesiaSuspendidaException } from '../../common/exceptions/iglesia-suspendida.exception';
 import { calcularEstadoFacturacion } from '../../common/utils/calcular-facturacion';
 import { generateCsrfToken } from '../../common/utils/generate-csrf-token';
@@ -74,6 +75,13 @@ export class AuthService {
    * Supabase.
    */
   async validateUser(email: string, password: string): Promise<ValidatedLogin> {
+    // Fase 8 de docs/supabase.md (RLS): todavía no hay ninguna identidad resuelta en este
+    // punto (es justo lo que este método va a averiguar) — bypass explícito de tenant,
+    // igual que hace GoTrue por dentro con su propio service_role para el mismo caso.
+    return runAsService(() => this.validateUserComoServicio(email, password));
+  }
+
+  private async validateUserComoServicio(email: string, password: string): Promise<ValidatedLogin> {
     const usuario = await this.prisma.usuario.findUnique({
       where: { email },
       include: { iglesia: { select: { estado: true, proximaFacturacion: true } } },
@@ -168,6 +176,11 @@ export class AuthService {
    * muestra el modal obligatorio antes de dejar entrar a cualquier otra pantalla.
    */
   async login(usuario: Usuario, session: SupabaseSession): Promise<LoginResponse> {
+    // Fase 8 de docs/supabase.md (RLS): a diferencia de validateUser, acá ya se conoce la
+    // identidad real (login la validó) — se usa esa, no un bypass de servicio, para que
+    // las escrituras de abajo (SesionActividad, Usuario) queden correctamente scoped.
+    updateTenantContext({ usuarioId: usuario.id, iglesiaId: usuario.iglesiaId, rol: usuario.rol });
+
     const ahora = new Date();
     await Promise.all([
       this.prisma.sesionActividad.create({
@@ -229,10 +242,16 @@ export class AuthService {
 
     const usuarioId = await this.supabaseJwtVerifier.verifyAndExtractUsuarioId(session.accessToken);
 
+    // Fase 8 de docs/supabase.md (RLS): mismo bootstrap por-id que JwtAuthGuard — la policy
+    // de `usuarios` permite auto-lectura por `id` para resolver esta misma búsqueda.
+    updateTenantContext({ usuarioId });
+
     const usuario = await this.prisma.usuario.findUnique({ where: { id: usuarioId } });
     if (!usuario || !usuario.activo) {
       throw new UnauthorizedException('Usuario inválido o inactivo');
     }
+
+    updateTenantContext({ iglesiaId: usuario.iglesiaId, rol: usuario.rol });
 
     // Respaldo best-effort del heartbeat (ver ./auth.controller.ts#heartbeat): un refresh
     // ocurre cada ~15 min mientras la pestaña está abierta, así que igual sirve como señal
@@ -419,7 +438,7 @@ export class AuthService {
   /**
    * Solo USUARIO tiene módulos delegados por AccesoModulo (ver AccesosModule); para el
    * resto de los roles el acceso a módulos no se decide por esta lista (MANAGER tiene
-   * acceso total vía ModuloAccessGuard, SUPER_ADMIN/MIEMBRO no usan estos módulos), así
+   * acceso total vía ModuloAccessGuard, SUPER_ADMIN no usa estos módulos), así
    * que se evita la query en esos casos.
    */
   private async getModulosOtorgados(usuario: Usuario): Promise<ModuloSistema[]> {

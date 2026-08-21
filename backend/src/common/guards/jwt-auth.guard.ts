@@ -9,6 +9,7 @@ import { EstadoIglesia, Rol } from '@prisma/client';
 import { Request } from 'express';
 import { ACCESS_TOKEN_COOKIE } from '../constants/auth-cookies';
 import { MUST_CHANGE_PASSWORD_ALLOWLIST } from '../constants/must-change-password-allowlist';
+import { updateTenantContext } from '../context/tenant-context';
 import { IglesiaSuspendidaException } from '../exceptions/iglesia-suspendida.exception';
 import { calcularEstadoFacturacion } from '../utils/calcular-facturacion';
 import { JwtPayload } from '../interfaces/jwt-payload.interface';
@@ -33,6 +34,11 @@ import { SupabaseJwtVerifierService } from '../../supabase/supabase-jwt-verifier
  * que ya paga por `activo`/`iglesia`) — el caveat de "hasta 15 min de
  * desactualización" que existía antes solo sigue aplicando a `rol`/`iglesiaId`,
  * que vienen de la fila de Usuario recién leída, no del token.
+ *
+ * Fase 8 de docs/supabase.md (RLS): también es quien puebla el contexto de
+ * tenant (ver tenant-context.ts) que usa `PrismaService` para que las
+ * policies de Postgres sepan a qué iglesia scopear cada query del resto del
+ * request.
  */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -51,6 +57,12 @@ export class JwtAuthGuard implements CanActivate {
 
     const usuarioId = await this.verifier.verifyAndExtractUsuarioId(token);
 
+    // Fase 8 de docs/supabase.md (RLS): hay que fijar el usuarioId en el contexto de
+    // tenant ANTES de la query de abajo — la policy de `usuarios` permite auto-lectura
+    // por `id` precisamente para resolver este huevo-y-gallina (todavía no sabemos
+    // `iglesiaId`, que es justo lo que esta query va a decirnos).
+    updateTenantContext({ usuarioId });
+
     const usuario = await this.prisma.usuario.findUnique({
       where: { id: usuarioId },
       select: {
@@ -68,6 +80,10 @@ export class JwtAuthGuard implements CanActivate {
     if (!usuario || !usuario.activo) {
       throw new UnauthorizedException('Sesión inválida o usuario inactivo');
     }
+
+    // A partir de acá el resto del request (este guard, el controller, los servicios que
+    // llame) ya queda scoped a la iglesia real del usuario para efectos de RLS.
+    updateTenantContext({ iglesiaId: usuario.iglesiaId, rol: usuario.rol });
 
     if (usuario.iglesia?.estado === EstadoIglesia.SUSPENDIDA) {
       const { diasEnMora } = calcularEstadoFacturacion(usuario.iglesia.proximaFacturacion);

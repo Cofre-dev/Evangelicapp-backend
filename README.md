@@ -75,7 +75,6 @@ corre `supabase-js` ni le habla a Supabase directamente, sigue hablando solo con
 | `SUPER_ADMIN` | Global (sin `iglesiaId`) | Da de alta iglesias + su manager, asignando plan y fecha de facturación. Dashboard cross-tenant. |
 | `MANAGER` | Su iglesia | Dueño del tenant (reemplaza al antiguo `PASTOR`). Único rol que gestiona usuarios, accesos delegados, notas, onboarding y facturación de su iglesia. |
 | `USUARIO` | Su iglesia | Reemplaza a los antiguos `TESORERO`/`SECRETARIA`. Su acceso a cada módulo delegable (Agenda, Finanzas, Ceremonias, Integrantes) lo otorga el MANAGER caso a caso vía `AccesoModulo` (módulo `accesos`), no viene fijo por el rol. |
-| `MIEMBRO` | Su iglesia | Definido en el schema; sin endpoints propios todavía (no confundir con `Integrante`, el censo de congregantes vía QR del módulo `integrantes`). |
 
 Autorización vía `JwtAuthGuard` + `RolesGuard` + `@Roles(...)` aplicados por controller. Los módulos delegables suman además `ModuloAccessGuard` + `@Modulo(...)`: MANAGER siempre tiene acceso completo (su acceso es por rol, no por lista), USUARIO solo si el MANAGER se lo otorgó. `Notas` es la excepción — no es un módulo delegable, es exclusivo de MANAGER salvo `GET mis-tareas` y `PATCH :id/marcar-hecha`, abiertos también a USUARIO sin necesitar un módulo otorgado.
 
@@ -243,9 +242,8 @@ Jest + ts-jest, specs colocados junto al código como `*.spec.ts` (convención d
 ## Pendientes conocidos
 
 - Sin tests de integración/e2e (solo unitarios de utilidades puras y del middleware CSRF por ahora).
-- Rol `MIEMBRO` está definido en el schema pero sin endpoints propios todavía.
 - `JwtAuthGuard` todavía acepta `Authorization: Bearer` como fallback además de la cookie — retirarlo una vez confirmado que el frontend migró por completo (ver [`docs/auth-cookies.md`](./docs/auth-cookies.md)).
 - No hay pasarela de pago: los planes/facturación se gestionan con confirmación manual del SuperAdmin (ver "Planes comerciales y facturación" más arriba). El módulo de facturación del lado de la iglesia es solo informativo.
 - El modelo `RefreshToken` sigue en `schema.prisma` pero ya no se usa (Supabase Auth maneja la rotación/reuso de refresh tokens desde el corte de la Fase 7) — pendiente una migración aparte para eliminar la tabla, no urgente.
-- Fase 8 de `docs/supabase.md` (RLS) puede empezar ahora que la Fase 7 está cortada, pero tiene un caveat técnico sin resolver: Prisma no abre conexiones "como el usuario autenticado" — ver `docs/supabase-todo.md`.
+- Fase 8 de `docs/supabase.md` (RLS) ya está implementada (policies + rol `app_runtime` sin `BYPASSRLS`, ver `FEATURES.md` 2026-08-20) pero **no está activa en producción todavía**: `DATABASE_URL` en Render sigue apuntando al rol `postgres` (con `BYPASSRLS`), no a `app_runtime`. Falta actualizar esa variable de entorno en Render y correr `prisma migrate resolve --applied 20260820181542_enable_rls_tenant_isolation` desde un entorno con conectividad directa a la base.
 - Hosting de la API: hasta ahora Render (ver bitácora en `FEATURES.md`) — a confirmar con el fundador si sigue siendo así.

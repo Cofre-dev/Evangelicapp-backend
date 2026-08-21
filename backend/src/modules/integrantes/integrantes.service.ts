@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EstadoIglesia } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import { runAsService } from '../../common/context/tenant-context';
 import { translateUniqueConstraintError } from '../../common/utils/translate-unique-constraint-error';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
@@ -37,10 +38,16 @@ export class IntegrantesService {
     return iglesia;
   }
 
-  /** Público: lo que ve el integrante al abrir el QR, antes de completar el formulario. */
+  /**
+   * Público: lo que ve el integrante al abrir el QR, antes de completar el formulario.
+   * Fase 8 de docs/supabase.md (RLS): sin identidad de Usuario — el qrToken de un solo
+   * uso ya es la autorización real (mismo criterio que Predicadores/AsistenciasService).
+   */
   async getInvitacion(qrToken: string) {
-    const iglesia = await this.findIglesiaActivaPorToken(qrToken);
-    return { nombre: iglesia.nombre, logoUrl: iglesia.logoUrl };
+    return runAsService(async () => {
+      const iglesia = await this.findIglesiaActivaPorToken(qrToken);
+      return { nombre: iglesia.nombre, logoUrl: iglesia.logoUrl };
+    });
   }
 
   /**
@@ -55,6 +62,10 @@ export class IntegrantesService {
    * elegida en este envío), nunca un dato ya guardado de un registro ajeno.
    */
   async registrar(qrToken: string, dto: RegistrarIntegranteDto, foto?: Express.Multer.File) {
+    return runAsService(() => this.registrarComoServicio(qrToken, dto, foto));
+  }
+
+  private async registrarComoServicio(qrToken: string, dto: RegistrarIntegranteDto, foto?: Express.Multer.File) {
     const iglesia = await this.findIglesiaActivaPorToken(qrToken);
     const fotoUrl = foto
       ? await this.supabaseStorage.upload(

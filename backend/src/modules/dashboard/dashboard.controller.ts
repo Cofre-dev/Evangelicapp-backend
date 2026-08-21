@@ -9,8 +9,8 @@ import { DashboardService } from './dashboard.service';
 
 /**
  * Landing con KPIs de la propia iglesia para MANAGER/USUARIO. Deliberadamente sin
- * MIEMBRO (sin funcionalidad propia todavía, ver CLAUDE.md) ni SUPER_ADMIN (tiene su
- * propio landing en GET /superadmin/dashboard, con visibilidad cross-tenant).
+ * SUPER_ADMIN (tiene su propio landing en GET /superadmin/dashboard, con
+ * visibilidad cross-tenant).
  *
  * No vive en `mi-iglesia` porque ese módulo es exclusivo de MANAGER — USUARIO también
  * necesita este landing, acotado a los módulos que tenga otorgados (ver DashboardService).

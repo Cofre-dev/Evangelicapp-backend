@@ -16,6 +16,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle, minutes } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from '../../common/constants/auth-cookies';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -64,6 +65,8 @@ export class AuthController {
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @UseGuards(LocalAuthGuard)
+  // Sin sesión que identifique al atacante todavía — el único freno posible es por IP.
+  @Throttle({ default: { limit: 10, ttl: minutes(1) } })
   async login(
     @Body() _dto: LoginDto,
     @Req() req: Request,
@@ -86,6 +89,7 @@ export class AuthController {
    */
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 20, ttl: minutes(1) } })
   async refresh(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,

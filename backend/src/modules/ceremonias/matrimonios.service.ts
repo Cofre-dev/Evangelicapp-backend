@@ -38,7 +38,7 @@ export class MatrimoniosService {
 
   /** El folio es correlativo por iglesia (no global) — ver comentario en el modelo Prisma. */
   async create(iglesiaId: string, usuarioId: string, dto: CreateMatrimonioDto) {
-    return this.prisma.$transaction(async (tx) => {
+    return this.prisma.withTenantTransaction(async (tx) => {
       const { _max } = await tx.matrimonio.aggregate({ where: { iglesiaId }, _max: { folio: true } });
 
       return tx.matrimonio.create({

@@ -15,7 +15,6 @@ enum Rol {
   SUPER_ADMIN
   MANAGER
   USUARIO
-  MIEMBRO
 }
 
 /// Módulos delegables por el MANAGER a un USUARIO vía AccesoModulo (pantalla de Accesos).

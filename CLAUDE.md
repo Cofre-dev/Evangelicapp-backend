@@ -52,7 +52,11 @@ Roles y para qué sirve cada uno en términos de negocio:
 | PASTOR | Líder de la iglesia, dueño de la cuenta | Gestiona su equipo, agenda, finanzas, notas/tareas |
 | TESORERO | Encargado de finanzas de la iglesia | Movimientos financieros, categorías, export contable, agenda |
 | SECRETARIA | Apoyo administrativo de la iglesia | Agenda, sus propias tareas asignadas |
-| MIEMBRO | Congregante | Rol modelado en la base de datos; **todavía sin funcionalidad propia** — pendiente de definir su alcance (¿ver agenda pública de su iglesia? ¿app de miembro a futuro?) |
+
+> Nota (2026-08-20): el rol `MIEMBRO` que aparecía aquí se eliminó del sistema — nunca tuvo
+> funcionalidad propia y se decidió no mantenerlo modelado "por si acaso". Los roles reales hoy
+> son exactamente tres: `SUPER_ADMIN`, `MANAGER` y `USUARIO` (ver `README.md` para el mapeo
+> técnico — `MANAGER` es el pastor/dueño del tenant, `USUARIO` reemplaza a tesorero/secretaria).
 
 ## Modelo de negocio (a completar)
 

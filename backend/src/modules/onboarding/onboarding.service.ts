@@ -19,8 +19,8 @@ export class OnboardingService {
     iglesiaId: string,
     dto: CompleteOnboardingDto,
   ): Promise<SafeUsuario & { requiresPasswordChange: boolean; requiresOnboarding: boolean }> {
-    await this.prisma.$transaction([
-      this.prisma.usuario.update({
+    await this.prisma.withTenantTransaction(async (tx) => {
+      await tx.usuario.update({
         where: { id: usuarioId },
         data: {
           nombre: dto.nombre,
@@ -28,12 +28,12 @@ export class OnboardingService {
           telefono: dto.telefono,
           onboardingCompletado: true,
         },
-      }),
-      this.prisma.iglesia.update({
+      });
+      await tx.iglesia.update({
         where: { id: iglesiaId },
         data: { visitantesPromedio: dto.visitantesPromedio },
-      }),
-    ]);
+      });
+    });
 
     return this.authService.getProfile(usuarioId);
   }

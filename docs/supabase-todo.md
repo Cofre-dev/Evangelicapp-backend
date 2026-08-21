@@ -15,6 +15,7 @@ bitácora que `FEATURES.md`.
 | 4 | Cron de recordatorios de facturación (7 días antes + cada 2 días en mora) + historial de pagos (`PagoIglesia`) + fecha de adquisición del plan | 2026-08-10 |
 | 5 | Realtime para las 3 pantallas (SuperAdmin, evento del pastor, censo en vivo) — **decisión propia: WebSocket propio en el backend, no Supabase Realtime nativo**, para no depender de que RLS (Fase 8) esté activo | 2026-08-13 |
 | 7 | **Completa, incluido el cutover final Y probada contra la base de datos real (no solo la de pruebas local).** Proyecto de prueba, login por email, espejo a `auth.users`, verificación JWKS, guard con las 3 revalidaciones, decisión de mantener cookies httpOnly + CSRF propio — y ahora `POST /auth/login`/`POST /auth/refresh` hablan de verdad con GoTrue (server-to-server), con fallback auto-sanador para contraseñas desincronizadas. De paso se corrigió `RealtimeGateway` (Fase 5), que verificaba el token de forma independiente y se habría roto con el cutover. Al pasar `DATABASE_URL` de Postgres local al proyecto real de Supabase (2026-08-16) aparecieron y se corrigieron dos bugs reales adicionales: identidad de Supabase Auth cruzada entre bases (una cuenta con el mismo email+password ya existía en el proyecto de Auth desde pruebas contra Postgres local, con `app_metadata` apuntando a una fila que no existe en la base real) y `verifyPassword`/`changePassword` (usados en toda confirmación de contraseña — facturación, borrar ceremonias/movimientos) seguían comparando solo contra bcrypt local en vez de Supabase, además de devolver 401 en vez de 403 ante una contraseña de confirmación incorrecta (causaba que el frontend cerrara sesión en vez de mostrar un error). Ver entradas del 2026-08-15 y 2026-08-16 en `FEATURES.md`. | 2026-08-14 al 2026-08-16 |
+| 8 | RLS activo en las 16 tablas con `iglesiaId`/`id` de tenant, atado a un contexto de tenant por-request (`AsyncLocalStorage` + middleware de Prisma), no a `auth.jwt()` (la app nunca usa PostgREST para datos de negocio). Resolvió el caveat de Prisma con `set_config` por request, como ya anticipaba este documento. Encontró y resolvió un problema no anticipado: `postgres` (el rol de `DATABASE_URL`) tenía `BYPASSRLS` en este proyecto — se creó un rol nuevo sin ese atributo (`app_runtime`) para el runtime de la API. Verificado a nivel SQL contra la base real (aislamiento, bypass de SUPER_ADMIN, fail-closed sin contexto) y por compilación; **no verificado con la app corriendo de verdad** (este entorno no tiene conectividad directa a la base — ver detalle y pendientes en `FEATURES.md`). | 2026-08-20 |
 
 **Nota sobre la Fase 4:** `docs/supabase.md` no tiene una línea de "Actualización" marcándola resuelta como sí tienen las Fases 5 y 7 — es solo que quedó sin anotar ahí, pero está hecha (ver entrada del 2026-08-10 en `FEATURES.md`). Vale la pena ir a marcarla en algún momento para que el documento original no quede engañoso.
 
@@ -28,14 +29,20 @@ bitácora que `FEATURES.md`.
 
 ## Pendiente ⏳
 
-| Fase | Qué falta exactamente |
+Ya no queda ninguna fase sin empezar — las 8 están hechas o bloqueadas por una decisión de
+negocio ajena a este documento (Fase 6). Lo que sigue son seguimientos puntuales, no fases:
+
+| Qué | Por qué importa |
 |---|---|
-| 8 — RLS | Ahora sí puede empezar (la Fase 7 ya está cortada de verdad y el JWT de Supabase trae `iglesia_id` confiable en `app_metadata`). Sigue teniendo un caveat técnico sin resolver: Prisma no abre conexiones "como el usuario autenticado", así que hay que decidir explícitamente cómo se combina RLS con el pool de conexión que usa Prisma hoy — no alcanza con activar las policies y asumir que ya quedó protegido. |
+| Actualizar `DATABASE_URL` en el dashboard de Render al rol `app_runtime` (no `postgres`) | Sin esto, el backend **desplegado** sigue conectando como `postgres` (que tiene `BYPASSRLS`) y las policies de la Fase 8 no le aplican — el trabajo de RLS queda activo en la base pero sin efecto real en producción hasta que se haga este cambio. Ver entrada del 2026-08-20 en `FEATURES.md`. |
+| Reconciliar `_prisma_migrations` en la base real | La migración de RLS se aplicó a mano (MCP de Supabase) porque este entorno no tiene conectividad directa a la base (`P1001`) — correr `prisma migrate resolve --applied 20260820181542_enable_rls_tenant_isolation` la próxima vez que alguien tenga esa conectividad. |
+| Smoke test end-to-end de la Fase 8 con la app corriendo de verdad | Lo que se verificó fue a nivel SQL (simulando el rol/contexto) y por compilación, no con requests HTTP reales — falta confirmar login, las 3 rutas públicas por token, dashboard de SuperAdmin, cron y WebSocket contra la base con RLS ya activo. |
 
-**No incluido en el cutover, a considerar por separado:** borrar el modelo `RefreshToken` del schema (se dejó de usar pero no se tiró la tabla — migración aparte, después de confirmar que el corte funciona sin sobresaltos); una conexión real de WebSocket contra el `RealtimeGateway` corregido no se probó en vivo (sí se verificó por compilación y por compartir el mismo patrón ya probado del guard HTTP); el camino de `IglesiaSuspendidaException` en el login/guard nuevo no se re-probó explícitamente (lógica sin cambios respecto a la versión anterior, ya validada).
+**No incluido en el cutover de Fase 7, a considerar por separado:** borrar el modelo `RefreshToken` del schema (se dejó de usar pero no se tiró la tabla — migración aparte, después de confirmar que el corte funciona sin sobresaltos); una conexión real de WebSocket contra el `RealtimeGateway` corregido no se probó en vivo (sí se verificó por compilación y por compartir el mismo patrón ya probado del guard HTTP); el camino de `IglesiaSuspendidaException` en el login/guard nuevo no se re-probó explícitamente (lógica sin cambios respecto a la versión anterior, ya validada).
 
-## Lo que haremos (orden sugerido, no empieza solo)
+## Lo que haremos
 
-1. **Nada de esto se toca sin tu OK explícito** — mismo criterio que se ha seguido en todas las fases anteriores, en particular para RLS por tocar el aislamiento multi-tenant.
-2. Cuando quieras retomar: definir primero cómo se resuelve el caveat de Prisma + RLS (probablemente `set_config` por request, o aceptar que RLS solo protege el acceso vía API de Supabase y no vía Prisma) antes de escribir ninguna policy.
-3. La Fase 6 (webhook de pagos) queda fuera de esta secuencia hasta que definamos el modelo de negocio — no es un tema técnico, es una conversación pendiente contigo/el fundador.
+Las 8 fases del plan original ya están resueltas (Fase 6 sigue bloqueada por una decisión de
+negocio, no técnica — ver tabla de arriba). Lo que queda son los 3 seguimientos de la tabla de
+Pendiente, en particular actualizar `DATABASE_URL` en Render — sin eso, la Fase 8 no protege
+todavía el backend que de verdad está en producción.
