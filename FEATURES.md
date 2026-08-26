@@ -1394,3 +1394,146 @@ la pena que quede claro que esta entrada NO toca nada de eso.
 —el crash pasaba en la primera query que cualquier request disparara— así que era un
 bug bloqueante de severidad máxima para todo lo entregado en la Fase 8, encontrado antes
 de llegar a producción gracias a que el usuario probó el arranque real del backend.
+
+## [2026-08-25 00:00] Infraestructura de staging: proyecto Supabase dedicado + rol `app_runtime`
+
+El usuario creó la rama `staging` para hacer QA en un ambiente pre-producción (backend en
+Render, frontend ya con un deploy de staging a Cloudflare Workers — ver
+`frontend/FEATURES.md` 2026-08-25, que dejó pendiente exactamente esta misma decisión:
+"¿`NEXT_PUBLIC_API_URL` apunta a un backend de staging separado o al mismo de
+producción?"). Antes de tocar nada se le preguntó explícitamente cómo resolverlo, y eligió
+un proyecto Supabase separado (no reusar el proyecto real `Backend`, que ya tiene cuentas
+reales del fundador y del equipo — ver `local-postgres-demo-setup` en memoria).
+
+**Cambios (fuera del repo, infraestructura de Supabase vía MCP):**
+- El proyecto `Backend-auth-test` (`grcywqjcqwpbuekqbupj`, descartable, dedicado a probar
+  el espejo de Supabase Auth de la Fase 7) se **pausó** — el plan free de la organización
+  solo permite 2 proyectos activos y ya estaba en el tope (`Backend` + `Backend-auth-test`).
+  Nada se perdió; se reanuda con un click cuando se retome esa fase.
+- Proyecto nuevo `Backend-staging` (`woerftoeqarupnrggupl`, `ca-central-1`, plan free,
+  $0/mes) creado en la misma organización.
+- Rol `app_runtime` creado en ese proyecto (mismo patrón que ya existe en `Backend`, ver
+  entrada del 2026-08-20 "RLS multi-tenant"): `login`, `noinherit`, sin `BYPASSRLS`, sin
+  superusuario. `alter default privileges` ya deja configurado que cualquier tabla que
+  `prisma migrate deploy` cree después (como rol `postgres`, dueño de las tablas) le otorgue
+  automáticamente `select/insert/update/delete` a `app_runtime` — no hizo falta esperar a
+  que las tablas existieran para dejarlo listo.
+- Verificado con `npx prisma db execute --url ... --stdin` (`select 1`) contra el pooler
+  IPv4 (`aws-0-ca-central-1.pooler.supabase.com:5432`, session mode, usuario
+  `app_runtime.woerftoeqarupnrggupl`) que la conexión funciona end-to-end — mismo patrón de
+  pooler recomendado en la sesión anterior para esquivar el P1001 por falta de IPv6 saliente
+  en la red del usuario (ver conversación/memoria de esa sesión).
+
+**Pendiente (fuera del alcance de esta sesión — requiere dashboards de Render/Cloudflare,
+sin MCP disponible para ninguno de los dos):**
+- Crear el Web Service de Render apuntando a la rama `staging` (root `backend`), con
+  `DATABASE_URL` = conexión `app_runtime` de arriba, un Pre-Deploy Command que corra
+  `prisma migrate deploy` con una conexión `postgres` elevada (el usuario debe sacarla del
+  dashboard de `Backend-staging` — el rol `postgres` de un proyecto nuevo no es recuperable
+  vía MCP), y `CORS_ORIGIN` apuntando al dominio que resulte del deploy de Cloudflare
+  Workers del frontend.
+- Buckets de Supabase Storage (logos/fotos) no están replicados en `Backend-staging` — si
+  QA sube logos/fotos, hoy no hay dónde guardarlos ahí; pendiente decidir si se crean en
+  este proyecto o si staging reusa los buckets de `Backend` (que ya tienen archivos reales).
+- Seed de datos demo en `Backend-staging` (`npm run prisma:seed`) — puede correr recién
+  después del primer `prisma migrate deploy` exitoso, con la URL `app_runtime` (alcanza,
+  seed es solo DML).
+- `SUPABASE_AUTH_TEST_*` deliberadamente sin configurar en el Render de staging: con
+  `Backend-auth-test` pausado no serviría igual, y como esas variables son opcionales
+  (`SupabaseAuthService` queda no-op sin ellas) no bloquea el resto del login/JWT propio.
+
+**Funcionalidad:** deja lista la mitad de la infraestructura de staging que sí se puede
+resolver sin acceso a Render/Cloudflare (base de datos aislada de los datos reales de
+producción, con el mismo modelo de permisos `app_runtime`/RLS que ya corre — parcialmente
+activado — en producción), documentado para que la próxima sesión (o el usuario) retome
+exactamente donde quedó en vez de tener que reconstruir el contexto.
+
+## [2026-08-25 22:10] Backend de staging en Render: deploy completo y funcionando
+
+Continuación de la entrada anterior — el usuario pidió instalar el MCP de Render
+(`https://mcp.render.com/mcp`, auth por header con un API key de cuenta, ya que el OAuth
+por defecto de Claude Code no es compatible con el servidor de Render) y usarlo para
+terminar la configuración. Con eso más el trabajo manual del usuario en el dashboard,
+quedó un backend de staging real y verificado en `https://evangelicapp-backend.onrender.com`
+(rama `staging`, servicio `srv-da700lq6iojc7380qmjg`, plan free).
+
+**Estado del servicio al empezar esta entrada:** ya existía (creado por el usuario ese
+mismo día, siguiendo la guía de la entrada anterior) pero con 2 deploys fallidos —
+Root Directory `backend/src` (sin `package.json` ahí) y Build/Start Command genéricos de
+Render (`yarn`/`yarn start`, este repo no tiene `yarn.lock`). El usuario corrigió esos 3
+campos a mano en el dashboard (Root Directory `backend`, Build Command
+`npm install && npx prisma generate && npm run build`, Start Command `npm run start:prod`)
+porque el MCP de Render no expone esos campos para un servicio ya creado (`create_web_service`
+tampoco tiene un parámetro de root directory — limitación real de la herramienta, no algo
+que se pueda resolver por API).
+
+**Bugs reales encontrados y corregidos, en orden, cada uno bloqueando el siguiente:**
+
+1. **`NODE_ENV=production` rompe el build de Nest.** `npm install` con esa env var
+   presente salta las `devDependencies` (comportamiento documentado de npm, no un bug de
+   Render) — `@nestjs/cli` vive ahí, así que `nest build` fallaba con `sh: 1: nest: not
+   found`. `prisma generate` no fallaba porque corre vía `npx` (que descarga el paquete al
+   vuelo si falta); `nest build` se invoca directo, sin ese fallback. Fix: variable
+   `NPM_CONFIG_PRODUCTION=false` (seteada vía MCP), que fuerza a npm a instalar
+   devDependencies igual sin tocar `NODE_ENV` (que sí se necesita en `production` en
+   runtime, para las cookies `Secure`/`SameSite=None`).
+2. **Base de datos completamente vacía.** El campo **Pre-Deploy Command** (donde iba
+   `prisma migrate deploy`) nunca se configuró — ni por el usuario en el dashboard ni por
+   mí (el MCP tampoco lo expone). En vez de agregar un cuarto campo manual más, corrí
+   `npx prisma migrate deploy` yo mismo desde esta sesión contra el pooler de
+   `Backend-staging` (rol `postgres`, connection string que el usuario sacó del dashboard
+   de Supabase) — las 15 migraciones se aplicaron limpio, incluida la de RLS. Pendiente
+   real: sigue sin existir un Pre-Deploy Command en Render, así que una migración nueva
+   que se agregue más adelante no se va a aplicar sola en el próximo deploy — hay que
+   correrla a mano (yo o quien tenga la connection string de `postgres`) o agregar ese
+   campo en el dashboard.
+3. **`SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` no son opcionales.** A diferencia de
+   `SUPABASE_AUTH_TEST_*`, `SupabaseStorageService` las pide con `getOrThrow` en el
+   constructor de un módulo `@Global()` — sin ellas el proceso entero moría al bootear
+   (`TypeError: Configuration key "SUPABASE_URL" does not exist`), aunque el build/deploy
+   en sí mismo apareciera "live" un momento antes de crashear. Se crearon los 4 buckets de
+   Storage en `Backend-staging` (mismos nombres/límites/mimetypes que producción:
+   `logos-iglesias`, `fotos-perfil`, `fotos-integrantes`, `certificados-ceremonias`) vía
+   `execute_sql` sobre `storage.buckets`, y se setearon ambas variables apuntando a ese
+   proyecto — mismo criterio de aislamiento que ya se había elegido para la base de datos.
+4. **Hallazgo más importante: `SUPABASE_AUTH_TEST_*` dejaron de ser opcionales desde el
+   "cutover final" de Fase 7 (commit `21a01f83`), pero el comentario de `.env.example`
+   nunca se actualizó.** `AuthService#validateUser` exige una sesión válida de
+   `signInWithPassword` para CUALQUIER login — el fallback a bcrypt local solo decide si
+   hay que sincronizar la contraseña hacia Supabase Auth, no reemplaza esa sesión. Sin esas
+   3 variables, todo login responde `401 Credenciales inválidas` (mensaje genérico, no
+   distingue "Supabase Auth no configurado" de "contraseña incorrecta" — visto en los logs
+   de Render: `signInWithPassword falló ... Supabase Auth no está configurado`). Corregido
+   `backend/.env.example` para que el comentario refleje la realidad actual, y resuelto en
+   staging apuntando `SUPABASE_AUTH_TEST_URL/SERVICE_ROLE_KEY/ANON_KEY` al mismo proyecto
+   `Backend-staging` (cualquier proyecto Supabase trae Auth incluido — no hace falta un
+   proyecto dedicado solo para esto, así que no se tocó el límite de 2 proyectos free ni
+   se volvió a pausar `Backend-auth-test`).
+
+**Verificado de punta a punta contra el servidor real:** `npx prisma:seed` corrido contra
+`Backend-staging` (con el rol `postgres`, no `app_runtime` — el seed hace `upsert` directo
+sin pasar por `runAsService()`, así que con `app_runtime` la policy RLS de `iglesias`
+rechazaba el insert con `42501 new row violates row-level security policy`, comportamiento
+esperado y correcto, no un bug). `POST /auth/login` real contra
+`https://evangelicapp-backend.onrender.com` con las credenciales del seed
+(`admin@evangelicapp.cl` / `SuperAdmin123`) devuelve `200`, cookies `access_token`/
+`refresh_token`/`csrf_token` con `Secure`/`SameSite=None` correctos, y el JWT de Supabase
+trae `app_metadata.rol: SUPER_ADMIN` y `usuarioId` correctos.
+
+**Pendiente real, sin resolver en esta sesión:**
+- Pre-Deploy Command en Render (ver bug 2) — cualquier migración futura necesita correrse
+  a mano hasta que se configure.
+- Deploy del frontend a Cloudflare Workers (`evangelicapp-frontend-staging`, ver
+  `frontend/wrangler.jsonc`) — sigue sin mecanismo de deploy conectado. Una vez que exista
+  esa URL, falta setear `CORS_ORIGIN`/`FRONTEND_URL` en este servicio de Render (hoy sin
+  configurar, así que cualquier request cross-origin desde un frontend real todavía
+  fallaría por CORS).
+- El API key de Render (`rnd_...`) que el usuario pegó en el chat da acceso a **toda la
+  cuenta** de Render (todos los servicios, no solo este), no solo a este proyecto —
+  vale la pena que el usuario lo rote si en algún momento deja de necesitar que Claude
+  tenga ese nivel de acceso.
+
+**Funcionalidad:** hay un backend de staging real, aislado de los datos de producción
+(Postgres, Storage y Auth en un proyecto Supabase separado, `Backend-staging`), corriendo
+en Render y verificado con un login real de punta a punta — listo para que el frontend de
+Cloudflare Workers lo consuma apenas tenga su propia URL de deploy.
