@@ -9,7 +9,7 @@ import {
 import { EstadoIglesia, Rol } from '@prisma/client';
 import { Server, Socket } from 'socket.io';
 import { ACCESS_TOKEN_COOKIE } from '../../common/constants/auth-cookies';
-import { runWithTenantContext } from '../../common/context/tenant-context';
+import { runWithTenantContext, updateTenantContext } from '../../common/context/tenant-context';
 import { resolveCorsOrigins } from '../../common/utils/cors-origins.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseJwtVerifierService } from '../../supabase/supabase-jwt-verifier.service';
@@ -75,12 +75,31 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
       // Fase 8 de docs/supabase.md (RLS): este socket no pasa por TenantContextMiddleware
       // (eso es HTTP-only) — hay que abrir el contexto de tenant a mano acá, mismo patrón
       // bootstrap-por-id que usa JwtAuthGuard (ver tenant-context.ts).
-      const usuario = await runWithTenantContext({ usuarioId }, () =>
-        this.prisma.usuario.findUnique({
+      //
+      // Dos queries, no una con `include: { iglesia }`: la policy RLS de `iglesias` exige
+      // iglesiaId en el contexto, que recién se conoce DESPUÉS de leer `usuario` — pedirla
+      // como include anidado en el mismo query corre bajo el contexto viejo (solo
+      // usuarioId) y Postgres descarta la fila completa (no solo el join), no únicamente el
+      // campo `iglesia`. Mismo bug que tenía JwtAuthGuard (ver esa entrada en FEATURES.md),
+      // encontrado acá también corriendo el QA de la Fase 5 (Realtime) contra RLS real.
+      const usuario = await runWithTenantContext({ usuarioId }, async () => {
+        const fila = await this.prisma.usuario.findUnique({
           where: { id: usuarioId },
-          select: { rol: true, iglesiaId: true, activo: true, iglesia: { select: { estado: true } } },
-        }),
-      );
+          select: { rol: true, iglesiaId: true, activo: true },
+        });
+
+        if (!fila) {
+          return null;
+        }
+
+        updateTenantContext({ iglesiaId: fila.iglesiaId, rol: fila.rol });
+
+        const iglesia = fila.iglesiaId
+          ? await this.prisma.iglesia.findUnique({ where: { id: fila.iglesiaId }, select: { estado: true } })
+          : null;
+
+        return { ...fila, iglesia };
+      });
 
       if (!usuario?.activo) {
         throw new Error('Usuario inactivo');
