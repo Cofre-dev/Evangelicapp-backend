@@ -111,8 +111,12 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
 
       if (usuario.rol === Rol.SUPER_ADMIN) {
         await client.join(SUPERADMIN_ROOM);
+        this.logger.warn(`QA-DEBUG join superadmin socketId=${client.id}`);
       } else if (usuario.iglesiaId) {
         await client.join(iglesiaRoom(usuario.iglesiaId));
+        this.logger.warn(
+          `QA-DEBUG join room="${iglesiaRoom(usuario.iglesiaId)}" socketId=${client.id} rooms=${JSON.stringify([...client.rooms])}`,
+        );
       } else {
         throw new Error('Usuario sin iglesiaId ni rol SUPER_ADMIN');
       }
