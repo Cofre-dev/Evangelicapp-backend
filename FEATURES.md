@@ -1674,3 +1674,46 @@ sin caerse (ni en el gate de login ni en lecturas autenticadas), que los límite
 las protecciones contra SQLi/CSRF/origin-spoofing funcionan como se documentaron, y deja
 una pregunta concreta y accionable sobre la ventana de reuso de refresh tokens para revisar
 antes de confiar en esa garantía en producción.
+
+## [2026-08-27 02:35] Cierre del hallazgo de refresh token: no era un bug, era una excepción documentada — pero aparece un matiz real distinto
+
+El usuario pidió revisar el "Refresh Token Reuse Interval" en Supabase Auth para el
+hallazgo de la entrada anterior. `search_docs` del MCP de Supabase (pregunta oficial
+"What is refresh token reuse detection and what does it protect from?", documentación de
+GoTrue) aclaró la causa real: **mi prueba anterior no era una prueba de robo de token,
+disparaba una excepción documentada e intencional**. GoTrue permite reusar un refresh token
+ya rotado en 2 casos: (1) dentro de una ventana de gracia de 10s (configurable, no
+recomendado cambiarla), y (2) **sin límite de tiempo, si el token reusado es el padre
+directo del token actualmente activo de la sesión** — pensado para clientes que no
+reciben/procesan la respuesta de un refresh y reintentan más tarde con el token anterior.
+Mi prueba de "20 segundos después" reusaba exactamente ese padre directo, así que el 200
+que vi era el comportamiento esperado, no una falla de seguridad.
+
+**Prueba correcta, repetida:** login → refresh (token0→token1) → refresh (token1→token2,
+activo) → esperar 15s (fuera de la ventana de 10s) → reusar **token0** (el abuelo, no el
+padre directo de token2). Resultado: `401 "Refresh token inválido o expirado"` — correcto,
+la detección de reuso real sí bloquea el intento.
+
+**Matiz real que sí quedó confirmado (con el estado de `auth.refresh_tokens` verificado por
+SQL directo, no solo por el código de respuesta):** la documentación de Supabase dice que,
+fuera de las 2 excepciones, "toda la sesión se considera terminada y todos sus refresh
+tokens quedan revocados". En la práctica, tras el intento bloqueado de reusar token0,
+**token2 (el legítimo, activo en ese momento) siguió funcionando con normalidad** — se pudo
+seguir refrescando sin problema, y en la base solo aparece marcado `revoked` porque mi
+propio script lo usó legítimamente después, no por una revocación en cascada disparada por
+el intento de reuso detectado. O sea: el intento puntual de reusar un token robado/viejo sí
+se rechaza, pero no hay evidencia de que tumbe el resto de la sesión activa como describe la
+documentación — si alguien de verdad robara un refresh token viejo y lo intentara usar,
+fallaría esa request puntual, pero no forzaría un logout del usuario legítimo ni generaría
+ninguna señal visible de que hubo un intento de robo.
+
+**Recomendación, no bloqueante hoy** (pre-lanzamiento, sin iglesias reales operando):
+confirmar si esto es una limitación de la versión de GoTrue que usa este proyecto de
+Supabase, o si hace falta algo adicional (ej. revocar sesión completa a mano vía Admin API
+cuando `AuthService` detecte un 401 de reuso) antes de depender de esa garantía de
+"cascada" en producción real.
+
+**Funcionalidad:** cierra con precisión un hallazgo de la ronda anterior de QA — la
+detección de reuso de refresh tokens SÍ protege el intento puntual de robo, pero la
+terminación en cascada de toda la sesión (que si iba a ser una garantía real habría que
+poder demostrar) no se confirmó en este entorno.
