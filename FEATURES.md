@@ -1537,3 +1537,83 @@ trae `app_metadata.rol: SUPER_ADMIN` y `usuarioId` correctos.
 (Postgres, Storage y Auth en un proyecto Supabase separado, `Backend-staging`), corriendo
 en Render y verificado con un login real de punta a punta — listo para que el frontend de
 Cloudflare Workers lo consuma apenas tenga su propia URL de deploy.
+
+## [2026-08-26 22:15] Fix real de CORS de staging + hallazgo y fix de un bug de RLS en producción (módulos de USUARIO)
+
+**Cambios — CORS del frontend recién desplegado:**
+- `CORS_ORIGIN`/`FRONTEND_URL` en el Render de staging, sin configurar hasta ahora, se
+  setearon a `https://evangelicapp.rojascofrem.workers.dev` (URL real del deploy de
+  Cloudflare Workers del frontend) — resolvía el error de CORS que el usuario vio al
+  probar el login desde ese dominio.
+
+**Investigado y explicado (sin cambios de código):** el usuario reportó que el login
+funcionaba en su PC pero lo "botaba" del dashboard al probar desde el celular o desde otro
+computador. Diagnóstico: no es un bug — los navegadores mobile/Safari bloquean por defecto
+las cookies "de terceros" (cross-site, `SameSite=None`) entre `onrender.com` y
+`workers.dev`, dos dominios sin relación. El login inicial funciona (trae el usuario en el
+body de la respuesta), pero la cookie de sesión nunca queda guardada en esos navegadores,
+así que la siguiente request autenticada falla con 401 y la app redirige a login. Fix real
+requeriría un dominio propio compartido entre frontend/backend (mismo *site*); el usuario
+confirmó que por ahora solo necesita poder probar desde su propio equipo, así que se dejó
+así a propósito — no se tocó código.
+
+**Preparación de datos de QA:** además de las 3 iglesias demo del seed (`igl_demo`
+PRO/verde, `igl_valpo` MEDIO/amarillo, `igl_conce` BASICO/en mora — los 3 semáforos de
+facturación posibles, sin tener que crear nada nuevo), se agregaron 3 usuarios `USUARIO`
+vía SQL directo (uno por iglesia, `mustChangePassword: false` para no bloquear las pruebas
+automatizadas): `tesorero_demo` (los 4 módulos), `secretaria_valpo` (solo `AGENDA`),
+`usuario_conce` (ningún módulo) — pensados para cubrir acceso total, acceso parcial y
+acceso nulo.
+
+**QA automatizado contra el servidor real** (`backend/src` no tiene suite de integración
+propia todavía, así que se armó un script ad-hoc en Node con `fetch` nativo, manejo manual
+de cookies/CSRF, no commiteado al repo — vive en el scratchpad de la sesión): 7 logins,
+control de acceso por módulo (`ModuloAccessGuard`), aislamiento multi-tenant (crear un
+evento con un usuario y confirmar que otro tenant no lo ve ni en detalle ni en el listado ni
+puede borrarlo), que `SUPER_ADMIN` no vea campos financieros en el detalle de una iglesia,
+CSRF (mutación sin token → 403), ciclo completo de mora (`ocultar` → login bloqueado →
+`mostrar` → login restaurado), y rate limiting de `/auth/login` (12 intentos seguidos
+activan el 429 documentado).
+
+**Bug real encontrado y corregido — `backend/src/common/guards/jwt-auth.guard.ts`:**
+`tesorero_demo` (con `FINANZAS` otorgado) y `secretaria_valpo` (con `AGENDA` otorgado)
+recibían `403 Forbidden resource` incluso en el ÚNICO módulo que sí tenían permitido. Causa
+raíz: `JwtAuthGuard` pedía `accesosPropios` como `include` anidado en el mismo
+`prisma.usuario.findUnique(...)` que resuelve `iglesiaId`/`rol`, pero
+`updateTenantContext({ iglesiaId, rol })` recién se llamaba DESPUÉS de que ese query
+completara — la policy RLS de `accesos_modulo` exige `iglesiaId` en el contexto de tenant
+para devolver filas, así que ese `include` corría siempre con el contexto viejo (solo
+`usuarioId`, sin `iglesiaId`) y RLS lo filtraba a 0 filas siempre, sin importar los accesos
+reales de ningún usuario. Confirmado con una simulación SQL directa (mismos `set_config`
+que usa el guard, en el mismo orden exacto) antes de tocar código: con solo `usuario_id`
+seteado, la query de `accesos_modulo` devuelve `[]`; con `iglesia_id`/`rol` ya seteados,
+devuelve las filas reales. **Por qué nunca se vio antes:** en producción `DATABASE_URL`
+todavía conecta como `postgres` (con `BYPASSRLS`, pendiente ya documentado en `README.md`),
+así que RLS nunca se aplicaba de verdad ahí — este bug estaba completamente
+enmascarado y recién se hizo visible al correr con `app_runtime` real por primera vez en
+este entorno de staging. **Fix:** se separó `accesoModulo.findMany(...)` en una query aparte,
+ejecutada después de `updateTenantContext(...)`, y solo para `rol === USUARIO` (MANAGER/
+SUPER_ADMIN no la necesitan, `modulos` les queda `[]` igual que antes). Verificado con
+`npx tsc --noEmit` limpio y con el mismo script de QA de arriba, corrido antes y después del
+fix contra el servidor real: 2 checks que fallaban (más otros 2 que dependían de ellos)
+pasan a estar en verde tras el fix, sin tocar ningún otro comportamiento.
+
+**Impacto real de este bug si no se hubiera encontrado acá:** el día que `README.md`
+complete su pendiente de pasar `DATABASE_URL` de producción a `app_runtime` (necesario para
+que RLS proteja de verdad), el módulo completo de Accesos (`USUARIO` con permisos
+delegados) se habría roto en producción de un día para otro — ningún `USUARIO` habría
+podido usar ningún módulo, sin importar qué accesos tuviera otorgados, y nadie lo habría
+detectado hasta que un cliente real reportara "no puedo ver nada" tras el cutover.
+
+**Datos de prueba:** los 2 eventos creados durante el QA (uno por tenant, para probar el
+aislamiento) se borraron al terminar. Los 3 usuarios `USUARIO`/3 iglesias del seed quedan
+en `Backend-staging` a propósito, para que el usuario los siga usando en sus propias
+pruebas.
+
+**Funcionalidad:** además de dejar el CORS de staging funcionando con la URL real del
+frontend, este QA encontró y cerró un bug de severidad alta que iba a golpear producción en
+el momento exacto en que RLS pasara a estar realmente activo ahí — exactamente el escenario
+que `CLAUDE.md` pide cuidar ("no romper el aislamiento multi-tenant bajo ninguna
+circunstancia"), aunque en este caso el efecto era "romper el acceso legítimo", no una fuga
+de datos entre iglesias (esa garantía, la de aislamiento entre tenants, se probó aparte y
+quedó confirmada intacta).
