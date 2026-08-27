@@ -73,7 +73,6 @@ export class JwtAuthGuard implements CanActivate {
         activo: true,
         mustChangePassword: true,
         iglesia: { select: { estado: true, proximaFacturacion: true } },
-        accesosPropios: { select: { modulo: true } },
       },
     });
 
@@ -94,12 +93,29 @@ export class JwtAuthGuard implements CanActivate {
       throw new ForbiddenException('Debe cambiar su contraseña temporal antes de continuar');
     }
 
+    // Query separada (no un include anidado en el findUnique de arriba): la policy RLS de
+    // accesos_modulo exige iglesiaId en el contexto de tenant, que recién queda seteado en
+    // la línea de arriba — si se pide como include del mismo query, corre bajo el contexto
+    // viejo (solo usuarioId) y RLS lo filtra a 0 filas siempre, sin importar los accesos
+    // reales del usuario. Encontrado corriendo el backend contra una base con RLS realmente
+    // activa (app_runtime, no postgres) por primera vez — en producción quedaba enmascarado
+    // porque DATABASE_URL todavía conecta como postgres (BYPASSRLS).
+    const modulos =
+      usuario.rol === Rol.USUARIO
+        ? (
+            await this.prisma.accesoModulo.findMany({
+              where: { usuarioId: usuario.id },
+              select: { modulo: true },
+            })
+          ).map((acceso) => acceso.modulo)
+        : [];
+
     const payload: JwtPayload = {
       sub: usuario.id,
       email: usuario.email,
       rol: usuario.rol,
       iglesiaId: usuario.iglesiaId,
-      modulos: usuario.rol === Rol.USUARIO ? usuario.accesosPropios.map((acceso) => acceso.modulo) : [],
+      modulos,
     };
 
     (request as Request & { user: JwtPayload }).user = payload;
