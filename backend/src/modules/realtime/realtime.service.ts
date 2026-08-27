@@ -22,10 +22,7 @@ export class RealtimeService {
       this.logger.warn(`Emit "${evento}" ignorado: el gateway todavía no inicializa`);
       return;
     }
-    const room = iglesiaRoom(iglesiaId);
-    const size = this.server.sockets.adapter.rooms.get(room)?.size ?? 0;
-    this.logger.warn(`QA-DEBUG emitAIglesia room="${room}" socketsEnRoom=${size} evento="${evento}"`);
-    this.server.to(room).emit(evento, payload);
+    this.server.to(iglesiaRoom(iglesiaId)).emit(evento, payload);
   }
 
   emitASuperAdmin(evento: string, payload: unknown): void {
