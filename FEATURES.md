@@ -1717,3 +1717,121 @@ cuando `AuthService` detecte un 401 de reuso) antes de depender de esa garantía
 detección de reuso de refresh tokens SÍ protege el intento puntual de robo, pero la
 terminación en cascada de toda la sesión (que si iba a ser una garantía real habría que
 poder demostrar) no se confirmó en este entorno.
+
+## [2026-08-27 03:05] QA de staging, ronda 3: Ceremonias, Integrantes/QR, Predicadores, límites de Departamentos — y un segundo bug de RLS encontrado y corregido (Realtime)
+
+Continuación de la lista de casos de QA pendientes. Todo contra el servidor real de
+staging, con verificación cruzada en la base de datos (no solo códigos de respuesta HTTP)
+en los puntos donde importaba.
+
+**Ceremonias/certificados** — todo correcto: generar PDF (cache miss), 2da descarga
+byte-a-byte idéntica (cache hit), editar el registro invalida el caché (bytes distintos en
+la 3ra descarga, objeto viejo queda huérfano en el bucket tal como está documentado),
+acceso cross-tenant al certificado de otra iglesia → `403`, bucket privado
+(`certificados-ceremonias`) rechaza lectura pública sin auth (`400 NoSuchBucket`, Supabase
+no revela ni que el bucket existe), y el flujo de borrado con `ConfirmPasswordDto`
+(sin password → 400, password incorrecta → 403, correcta → 204).
+
+**Integrantes / QR público** — todo correcto: invitación pública sin auth, QR inválido →
+404, registro público vía `multipart/form-data` (sin login) → 201, duplicado por
+email/RUN → 201 "falso éxito" sin crear fila nueva (confirmado por SQL: sigue habiendo
+exactamente 1 fila, con los datos del envío original, no del duplicado) — diseño
+anti-enumeración deliberado, no un bug. RUN con dígito verificador incorrecto → 400.
+Confirmado además que **no existe ningún campo de consentimiento (Ley 21.719) en el
+backend** — ni en el DTO ni en el modelo `Integrante` — es una validación 100% de UI, el
+backend no la conoce ni la exige.
+
+**Predicadores (link público del email)** — todo correcto: invitación pública sin auth,
+token inválido → 404, `respuesta` fuera de `CONFIRMADO`/`RECHAZADO` → 400, confirmar → 201
+con `estado`/`respondidoAt` actualizados, y **no se puede "cambiar de opinión"**: reusar el
+mismo token para responder de nuevo → 400 "Esta invitación ya fue respondida".
+
+**Límites de plan en Departamentos financieros** (lo que había quedado pendiente de la
+ronda 1, que solo cubrió el límite de usuarios): BÁSICO e MEDIO → el 1er subdepartamento ya
+rechaza con `403 PLAN_SIN_SUBDEPARTAMENTOS`; PRO → permite crear hasta 10, el 11vo rechaza
+con `403 PLAN_LIMITE_DEPARTAMENTOS`. Los 3 planes se comportan exactamente como documenta
+`common/constants/plan.ts`.
+
+**Onboarding, logout, heartbeat, export a Excel** — todo correcto: completar el onboarding
+actualiza `onboardingCompletado` (verificado vía `GET /auth/me`); `POST /auth/logout`
+limpia las 3 cookies de verdad (`Max-Age=0`) y la MISMA cookie ya no autentica después
+(`401`, no solo un logout "de mentira" del lado del cliente); heartbeat responde `204`;
+`GET /finanzas/movimientos/exportar` devuelve un `.xlsx` con firma ZIP válida (`PK\x03\x04`).
+
+**Cron de facturación**: no tiene ningún endpoint ni mecanismo para invocarse manualmente
+(`@Cron(CronExpression.EVERY_DAY_AT_9AM)`, sin trigger HTTP) — no se pudo probar de punta a
+punta sin esperar al horario real o correr el servicio directamente en un contexto Nest
+local, que no se hizo. Queda sin verificar en esta ronda.
+
+**`npm audit`, con seguimiento de a qué llega en runtime (no solo el conteo)**: 33
+vulnerabilidades (1 crítica, 11 altas). La mayoría (`@nestjs/cli`, `glob`, `tmp`,
+`picomatch`, `js-yaml`, la mayoría de las instancias de `lodash`/`brace-expansion`) vienen
+exclusivamente de herramientas de build/dev (`@nestjs/cli`, `eslint`, `jest`,
+`typescript-eslint`) — nunca se empaquetan en `dist/`, no son alcanzables por un atacante
+externo a través de la API. La crítica (`tar`, vía `bcrypt → @mapbox/node-pre-gyp`) solo se
+ejecuta durante `npm install` (descarga del binario nativo), no en tiempo de request.
+Las que sí están presentes en el proceso que sirve tráfico real: `@nestjs/platform-express`
+(alta, vía `multer` — endpoints reales de subida de archivos), `nodemailer` (alta, inerte
+hoy en staging porque `SMTP_HOST` es un placeholder que no envía nada, pero real el día que
+se conecte un proveedor de verdad), `lodash` (alta, vía `@nestjs/config`, uso interno no
+auditado en detalle), y `brace-expansion` (alta, vía `exceljs → archiver` para el export a
+Excel, exposición baja porque no hay input de usuario en esa ruta de glob). Todos los fixes
+disponibles implican subir de versión mayor (`@nestjs/cli` 11.x, `@nestjs/platform-express`
+11.x, `@nestjs/config` 4.x, `nodemailer` 9.x) — no se aplicó nada, es una decisión de
+upgrade que hay que tomar aparte, no algo para resolver a ciegas con `--force` en medio de
+un QA.
+
+**Segundo bug real de RLS encontrado y corregido: `RealtimeGateway#handleConnection`
+(`src/modules/realtime/realtime.gateway.ts`).** Mismo patrón exacto que el bug de
+`JwtAuthGuard` de la ronda 1 (commit `c66d6723`): pedía `usuario.findUnique({ include: {
+iglesia } })` en un solo query, con el contexto de tenant teniendo solo `usuarioId`
+(`iglesiaId`/`rol` recién se conocen leyendo esa misma fila). La policy RLS de `iglesias`
+exige `iglesiaId` en el contexto — Postgres no dejaba `iglesia` en `null` nada más, **descartaba
+la fila `usuario` completa**, así que CUALQUIER conexión de socket.io de un `MANAGER` o
+`USUARIO` (no `SUPER_ADMIN`) terminaba rechazada con "Usuario inactivo", sin importar que el
+usuario estuviera perfectamente activo. Confirmado con un repro que usa el cliente Prisma
+extendido real de la app (no una simulación con `set_config` a mano, que daba un resultado
+distinto y por eso no alcanzaba para diagnosticar esto — ver detalle en el historial de
+esta sesión). **Impacto si no se hubiera encontrado acá**: el día que producción pase
+`DATABASE_URL` a `app_runtime` (el mismo pendiente que ya motivó el bug de Accesos de la
+ronda 1), el módulo completo de Realtime (Fase 5 — dashboard en vivo del SuperAdmin,
+pantalla de evento del Pastor, censo en vivo) habría quedado inutilizable de un día para
+otro para cualquier usuario que no fuera SUPER_ADMIN.
+
+**Fix**: mismo patrón que el de `JwtAuthGuard` — separar en 2 queries (`usuario` primero,
+sin include; `updateTenantContext(iglesiaId, rol)`; después `iglesia` aparte). Verificado
+localmente con el cliente real antes de desplegar, y de punta a punta contra el servidor
+real ya desplegado: 2 sockets conectados con tokens válidos de distintas iglesias, un
+socket con token inválido correctamente rechazado, un registro real vía QR público dispara
+`integrante:registrado` — **el socket de la iglesia correcta lo recibe, el de la iglesia
+distinta no** (aislamiento multi-tenant confirmado también para Realtime, no solo para
+HTTP). Nota de proceso: la primera vuelta de esta prueba pareció seguir fallando incluso
+después del fix — la causa real no era otro bug, era que las corridas repetidas de esta
+sesión reutilizaron el mismo RUN de integrante de prueba, y el registro caía en la rama
+"duplicado" (falso-éxito documentado en la entrada anterior de Integrantes) sin emitir
+ningún evento; se detectó agregando logging temporal (revertido después), no por un tercer
+bug.
+
+**Datos de prueba y estado dejado**: se borraron todos los registros/eventos/certificados
+de prueba de esta ronda. `jperez` quedó con `onboardingCompletado: true` y su contraseña
+en `NuevaClaveJperez123` (antes `Temporal123`) como parte de probar ese flujo — mismo
+criterio que `lfuentes`/`mrojas` en rondas anteriores. Los 10 departamentos de prueba de
+`igl_demo` y el usuario extra de `igl_conce` (`qa_usr_conce_2`, usado para el límite de
+plan) fueron borrados; los 3 usuarios `USUARIO` fijos de QA (`tesorero_demo`,
+`secretaria_valpo`, `usuario_conce`) siguen ahí a propósito, igual que las 3 iglesias del
+seed.
+
+**Funcionalidad**: cierra los 4 casos de QA pedidos explícitamente más los siguientes 6 de
+la lista original, encuentra y corrige un segundo bug de severidad alta (mismo patrón que
+el primero), y deja un inventario claro y accionable de `npm audit` separando lo que importa
+en runtime de lo que es solo ruido de tooling de build.
+
+**Barrido final de este mismo patrón de bug**: se revisaron todos los usos de
+`runWithTenantContext`/`updateTenantContext` en el repo para confirmar que no quedara un
+tercer caso. Los únicos 2 puntos que arrancan un contexto con solo `usuarioId` (antes de
+conocer `iglesiaId`) eran exactamente `JwtAuthGuard` y `RealtimeGateway`, ambos ya
+corregidos. `AuthService#refreshTokens` hace el mismo bootstrap por-id pero con un
+`findUnique` plano (sin `include` anidado) — no tiene esta vulnerabilidad. El de
+`AuthService#validateUser` (login) corre bajo `runAsService()` (rol `SERVICE`, privilegiado
+por diseño) — tampoco aplica, cualquier query pasa RLS sin importar `iglesiaId`. No quedó
+ningún tercer caso pendiente.
