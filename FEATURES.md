@@ -1617,3 +1617,60 @@ que `CLAUDE.md` pide cuidar ("no romper el aislamiento multi-tenant bajo ninguna
 circunstancia"), aunque en este caso el efecto era "romper el acceso legítimo", no una fuga
 de datos entre iglesias (esa garantía, la de aislamiento entre tenants, se probó aparte y
 quedó confirmada intacta).
+
+## [2026-08-27 02:30] QA de staging, ronda 2: carga con k6 + flujo de contraseña, límites de plan, refresh token, SQLi
+
+**MCP instalado (fuera del repo):** `grafana/mcp-k6` vía Docker (`docker run --rm -i
+grafana/mcp-k6`, scope local, no commiteado) — el usuario pidió explícitamente probar con
+"Grafana"; se le aclaró que el MCP es de k6 (herramienta de carga), no del Grafana de
+escritorio que tiene instalado (producto distinto de la misma empresa).
+
+**Carga contra el servidor real de staging** (`https://evangelicapp-backend.onrender.com`,
+free tier — intensidad deliberadamente moderada para no abusar de infra compartida):
+- 15 VUs / 30s contra `POST /auth/login`: 348 requests, 0 errores 5xx, latencia p95 de
+  login exitoso ~2.7s. El 92% recibió 429 — el rate limit (10/min) funcionando exactamente
+  como debe bajo concurrencia, no una caída del servidor.
+- 20 VUs / 30s de lecturas autenticadas contra `GET /agenda/eventos`: 318 requests, 0
+  errores 5xx, solo 2 recibieron 429 (rate limit global de 120/min). El servidor no se cae
+  ni se degrada de forma anómala bajo esta carga.
+
+**Resto de casos de QA pedidos ("continua con todos los tests"), contra el servidor real:**
+- Flujo de cambio de contraseña obligatoria (`lfuentes`): bloqueado correctamente en
+  cualquier endpoint fuera del allowlist mientras `mustChangePassword=true`;
+  `PATCH /auth/change-password` funciona y desbloquea el resto de la API.
+- Límite de plan (`PLAN_LIMITES`): con `igl_conce` en plan BÁSICO (tope 3 usuarios), crear
+  el 3er usuario funciona (201) y el 4to falla con `403 PLAN_LIMITE_USUARIOS` — el tope se
+  aplica de verdad, no solo en el frontend.
+- Intento de SQL injection en `GET /iglesias?search=...`: un payload con keywords obvias
+  (`DROP TABLE`) fue bloqueado por el WAF de Cloudflare delante de Render (403 "Blocked",
+  ni siquiera llega a la app) — repetido con payloads más suaves (`O'Brien`,
+  `' OR '1'='1`, `UNION SELECT`) que sí llegan a la app: todos devuelven `200` con
+  resultado vacío, nunca un error de SQL — Prisma parametriza correctamente, sin
+  inyección posible por esta vía.
+- Rotación de refresh token: inicialmente falló con `403 "Origen no permitido"` — no es un
+  bug, es `RefreshOriginMiddleware` (protección adicional no documentada hasta ahora en
+  esta sesión: exige header `Origin` válido en `/auth/refresh` específicamente, más allá
+  del CSRF normal). Con el header correcto, el refresh sí rota el token (valor viejo ≠
+  nuevo).
+
+**Hallazgo sin resolver, a seguir de cerca:** el refresh token *viejo* (ya marcado
+`revoked = true` en `auth.refresh_tokens` de Supabase, confirmado por SQL directo) siguió
+siendo aceptado por `POST /auth/refresh` incluso **20 segundos después** de haber rotado —
+más allá de lo que normalmente dura una ventana de gracia por race conditions entre
+pestañas. No se pudo confirmar en esta sesión si es el "Refresh Token Reuse Interval" de
+este proyecto de Supabase configurado más largo de lo esperado, o si la detección de reuso
+simplemente no está aplicándose. Recomendado: revisar ese setting en el dashboard de
+Supabase Auth del proyecto (`Backend-staging` hoy; el mismo proyecto real cuando se
+retome Fase 7 en producción) antes de confiar en que un refresh token robado se invalida
+solo.
+
+**Datos de prueba:** queda un usuario más en `igl_conce` (`qa_usr_conce_2`, tercer usuario
+del plan BÁSICO, usado para probar el límite) — se deja a propósito, junto con el resto de
+los usuarios de QA de la entrada anterior. `lfuentes` quedó con la contraseña cambiada a
+`NuevaClave123` (ya no `Temporal123`) como parte de probar ese flujo.
+
+**Funcionalidad:** confirma que el backend de staging aguanta carga concurrente moderada
+sin caerse (ni en el gate de login ni en lecturas autenticadas), que los límites de plan y
+las protecciones contra SQLi/CSRF/origin-spoofing funcionan como se documentaron, y deja
+una pregunta concreta y accionable sobre la ventana de reuso de refresh tokens para revisar
+antes de confiar en esa garantía en producción.
