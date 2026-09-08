@@ -16,10 +16,11 @@ son ajustes chicos sobre componentes que ya existen.
 ```
 POST /auth/forgot-password
   body: { "email": string }
-  - Sin sesión. SIEMPRE responde 200 { "ok": true }, exista o no el correo
-    (anti-enumeración). Un 500 = fallo real de envío de correo (tampoco filtra
-    si la cuenta existe) → mostrar error genérico y permitir reintento.
-  - Throttle: 5 requests / 15 min por IP.
+  - Sin sesión. SIEMPRE responde 200 { "ok": true }, exista o no el correo, y
+    aunque el envío del mail falle (anti-enumeración). El frontend no distingue
+    casos: siempre muestra el mismo mensaje neutro.
+  - Throttle: 5 requests / 15 min por IP → un 429 sí puede pasar si el usuario
+    reintenta mucho; mostrar "Esperá unos minutos antes de volver a intentar".
   - Manda un correo con un link a  <FRONTEND_URL>/recuperar-contrasena/<token>
   - El token vive 60 minutos y sirve UNA sola vez. Pedir uno nuevo invalida el anterior.
 
@@ -89,12 +90,12 @@ BLOQUE 1 — RECUPERACIÓN DE CONTRASEÑA (páginas nuevas)
    fuera del layout autenticado — mismo tratamiento que /login).
    - Un input de email + botón "Enviar enlace".
    - Al enviar: POST /auth/forgot-password { email } vía apiFetch.
-   - Éxito (200) o incluso si el correo no existe: mostrar SIEMPRE el mismo mensaje
+   - Respuesta 200 (siempre que no sea 429/red): mostrar SIEMPRE el mismo mensaje
      neutro, ej.: "Si el correo está registrado, te enviamos un enlace para
      restablecer tu contraseña. Revisá tu bandeja de entrada y spam."
-     Ocultar el formulario tras el envío exitoso.
-   - Error 500 / red: "No pudimos procesar la solicitud. Intentá de nuevo en unos
-     minutos." y dejar reintentar.
+     Ocultar el formulario tras el envío.
+   - 429: "Hiciste varios intentos seguidos. Esperá unos minutos y volvé a probar."
+   - Error de red: "No pudimos procesar la solicitud. Intentá de nuevo." y reintentar.
    - Link para volver a /login.
    - Reusar los componentes de UI del login (Card/Form/Input/Button/Alert) y la
      misma estética (logo arriba, max-w-sm, etc.).

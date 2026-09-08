@@ -401,9 +401,9 @@ export class AuthService {
       });
     });
 
-    // Se propaga un fallo de envío (el controller devuelve 500): un error de
-    // infraestructura de correo no revela si la cuenta existe, y sí evita dejar
-    // al usuario esperando un mail que nunca salió.
+    // enviarRecuperacionContrasena es best-effort y no lanza (igual que el resto
+    // de MailService): el controller responde 200 igual — un fallo de correo
+    // queda en los logs, no como un 500 para alguien ya bloqueado del sistema.
     await this.mailService.enviarRecuperacionContrasena({
       email: usuario.email,
       nombre: usuario.nombre,

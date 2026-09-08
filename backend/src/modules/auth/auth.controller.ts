@@ -84,9 +84,9 @@ export class AuthController {
 
   /**
    * "Olvidé mi contraseña" (link en el login). Público, sin sesión. SIEMPRE
-   * responde `{ ok: true }` aunque el correo no exista o esté inactivo — no
-   * filtra qué correos están registrados. Un 500 (fallo real de envío de
-   * correo) tampoco filtra existencia. Throttle agresivo por IP.
+   * responde `{ ok: true }` aunque el correo no exista, esté inactivo o el envío
+   * del mail falle — no filtra qué correos están registrados. Throttle agresivo
+   * por IP.
    */
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)

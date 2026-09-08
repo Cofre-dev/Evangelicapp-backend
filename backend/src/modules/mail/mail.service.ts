@@ -266,10 +266,11 @@ export class MailService {
 
   /**
    * "Olvidé mi contraseña" desde el login (ver AuthService#requestPasswordReset).
-   * A diferencia del resto de MailService, acá SÍ se propaga el error: si el correo
-   * no sale, el usuario nunca recibe el enlace y la recuperación queda muerta —
-   * el endpoint igual responde 200 (no filtra si la cuenta existe), pero deja el
-   * fallo logueado para poder diagnosticarlo.
+   * Best-effort y no lanza, igual que el resto de MailService: el endpoint
+   * responde 200 pase lo que pase (no filtra si la cuenta existe). Si el correo
+   * no sale queda logueado como error para diagnosticarlo por monitoreo — no se
+   * le muestra un 500 a alguien que ya está bloqueado del sistema y no puede
+   * hacer nada con ese error.
    */
   async enviarRecuperacionContrasena(params: RecuperacionContrasenaParams): Promise<void> {
     const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:3000');
@@ -299,7 +300,6 @@ export class MailService {
       });
     } catch (error) {
       this.logger.error(`No se pudo enviar el correo de recuperación a ${params.email}`, error);
-      throw error;
     }
   }
 
