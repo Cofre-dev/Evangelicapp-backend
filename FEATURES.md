@@ -2096,3 +2096,23 @@ el equipo vea las confirmaciones a un evento en tiempo real, separa el tono del 
 predicador invitado del de la convocatoria masiva (mencionándolo en esta última solo si
 corresponde), y da a los usuarios una forma de recuperar el acceso sin depender del
 SuperAdmin.
+
+**Actualización (2026-09-08, ~15:05) — smoke test contra staging desplegado:**
+- Commiteado y pusheado a `staging` (`0170262c` + `88...` con el ajuste de que
+  `forgot-password` no propaga fallos de correo → siempre 200). Deploy de Render OK.
+- `POST /auth/forgot-password`: email inexistente → 200; email inválido → 400; email real
+  → 200 (el envío falla porque el Render de staging todavía tiene `MAIL_PROVIDER=smtp` sin
+  SMTP configurado — queda logueado, no rompe la respuesta). El token de recuperación **sí**
+  se crea en BD antes del intento de envío.
+- `POST /auth/reset-password`: token bogus → 400; contraseña débil → 400 (ambas reglas);
+  campo extra → 400 (whitelist). Flujo completo con un token válido insertado por MCP:
+  200 → login con la contraseña nueva OK (confirma el sync a Supabase) → `usedAt` marcado
+  → reintento del mismo token → 400. Aislamiento RLS de `password_reset_tokens` implícito
+  (todo el flujo corre bajo `runAsService`).
+- `asistencia:respondida`: evento real con `notificarIntegrantes` (5 asistencias creadas)
+  → `POST /agenda/asistencias/:token/responder` → **el canal `tenant:<iglesiaId>` recibe
+  el broadcast** con `{ eventoId, integranteId, nombreCompleto, estado, respondidoAt }`.
+- Datos de prueba borrados (eventos, integrante, tokens, sesiones).
+- **No probado**: entrega real de correos por Resend (falta setear `MAIL_PROVIDER=resend` +
+  `RESEND_API_KEY` + `MAIL_FROM` en el Render de staging) y las plantillas nuevas de
+  predicador / convocatoria con el nombre del predicador.

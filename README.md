@@ -78,7 +78,7 @@ corre `supabase-js` ni le habla a Supabase directamente, sigue hablando solo con
 
 Autorización vía `JwtAuthGuard` + `RolesGuard` + `@Roles(...)` aplicados por controller. Los módulos delegables suman además `ModuloAccessGuard` + `@Modulo(...)`: MANAGER siempre tiene acceso completo (su acceso es por rol, no por lista), USUARIO solo si el MANAGER se lo otorgó. `Notas` es la excepción — no es un módulo delegable, es exclusivo de MANAGER salvo `GET mis-tareas` y `PATCH :id/marcar-hecha`, abiertos también a USUARIO sin necesitar un módulo otorgado.
 
-Rutas públicas (sin guard — el propio token de un solo uso en la URL es la autenticación, no hace falta cuenta en la plataforma): `agenda/predicadores/:token` (confirmación de predicadores por email), `agenda/asistencias/:token` (RSVP de integrantes a un evento) e `integrantes/registro/:qrToken` (alta de un integrante vía el QR propio de la iglesia).
+Rutas públicas (sin guard — el propio token de un solo uso en la URL/body es la autenticación, no hace falta cuenta en la plataforma): `agenda/predicadores/:token` (confirmación de predicadores por email), `agenda/asistencias/:token` (RSVP de integrantes a un evento), `integrantes/registro/:qrToken` (alta de un integrante vía el QR propio de la iglesia), y `auth/forgot-password` / `auth/reset-password` (recuperación de contraseña — `forgot-password` responde siempre 200 para no filtrar qué correos están registrados).
 
 ### Planes comerciales y facturación
 
@@ -94,7 +94,7 @@ No hay pasarela de pago todavía: el SuperAdmin confirma los pagos a mano (`POST
 
 | Módulo | Rutas base | Descripción |
 |---|---|---|
-| `auth` | `/auth/*` | Login, refresh, logout, `me`, cambio de contraseña. Puede responder 403 `IGLESIA_SUSPENDIDA` si la iglesia está oculta por mora |
+| `auth` | `/auth/*` | Login, refresh, logout, `me`, cambio de contraseña, recuperación de contraseña (`forgot-password`/`reset-password`, públicas). Puede responder 403 `IGLESIA_SUSPENDIDA` si la iglesia está oculta por mora |
 | `onboarding` | `/onboarding/*` | Completar datos del manager tras el primer login |
 | `usuarios` | `/usuarios/*` | MANAGER gestiona su equipo (rol USUARIO), sujeto al tope de usuarios del plan contratado |
 | `accesos` | `/accesos/*` | MANAGER otorga/revoca a cada USUARIO el acceso a los módulos delegables (Agenda, Finanzas, Ceremonias, Integrantes) |
@@ -245,5 +245,6 @@ Jest + ts-jest, specs colocados junto al código como `*.spec.ts` (convención d
 - `JwtAuthGuard` todavía acepta `Authorization: Bearer` como fallback además de la cookie — retirarlo una vez confirmado que el frontend migró por completo (ver [`docs/auth-cookies.md`](./docs/auth-cookies.md)).
 - No hay pasarela de pago: los planes/facturación se gestionan con confirmación manual del SuperAdmin (ver "Planes comerciales y facturación" más arriba). El módulo de facturación del lado de la iglesia es solo informativo.
 - El modelo `RefreshToken` sigue en `schema.prisma` pero ya no se usa (Supabase Auth maneja la rotación/reuso de refresh tokens desde el corte de la Fase 7) — pendiente una migración aparte para eliminar la tabla, no urgente.
+- Recuperación de contraseña (`POST /auth/reset-password`): cierra las `SesionActividad` locales del usuario pero **no revoca los refresh tokens de Supabase** — hacerlo exige un access token del usuario (que en un "olvidé mi contraseña" casi nunca hay) o una llamada admin por-usuario que `SupabaseAuthService` no expone todavía. Riesgo acotado a la vida de un refresh token (una sesión vieja sobrevive hasta su próximo refresh). Ver `FEATURES.md` 2026-09-08.
 - Fase 8 de `docs/supabase.md` (RLS) ya está implementada (policies + rol `app_runtime` sin `BYPASSRLS`, ver `FEATURES.md` 2026-08-20) pero **no está activa en producción todavía**: `DATABASE_URL` en Render sigue apuntando al rol `postgres` (con `BYPASSRLS`), no a `app_runtime`. Falta actualizar esa variable de entorno en Render y correr `prisma migrate resolve --applied 20260820181542_enable_rls_tenant_isolation` desde un entorno con conectividad directa a la base.
 - Hosting de la API: hasta ahora Render (ver bitácora en `FEATURES.md`) — a confirmar con el fundador si sigue siendo así.
