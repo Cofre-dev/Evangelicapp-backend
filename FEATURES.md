@@ -2113,6 +2113,19 @@ SuperAdmin.
   → `POST /agenda/asistencias/:token/responder` → **el canal `tenant:<iglesiaId>` recibe
   el broadcast** con `{ eventoId, integranteId, nombreCompleto, estado, respondidoAt }`.
 - Datos de prueba borrados (eventos, integrante, tokens, sesiones).
-- **No probado**: entrega real de correos por Resend (falta setear `MAIL_PROVIDER=resend` +
-  `RESEND_API_KEY` + `MAIL_FROM` en el Render de staging) y las plantillas nuevas de
-  predicador / convocatoria con el nombre del predicador.
+
+**Actualización (2026-09-08, ~17:35) — Resend operativo:**
+- El fundador seteó `MAIL_PROVIDER=resend` / `RESEND_API_KEY` / `MAIL_FROM` en el Render de
+  staging y verificó el dominio `evangelicapp.cl` en Resend (registros DNS en Cloudflare).
+- Primer intento (dominio agregado pero sin verificar) → Resend rechazó con
+  `"The evangelicapp.cl domain is not verified"`, logueado por `MailService`; el endpoint
+  `forgot-password` igual respondió 200 (anti-enumeración + best-effort).
+- Tras verificar el dominio: `forgot-password` (correo de recuperación) e invitación de
+  predicador (evento CULTO con un predicador, `notificarIntegrantes: false`), ambos al
+  inbox del fundador → **sin ningún error en los logs de Render** (MailService solo loguea
+  en fallo) = Resend aceptó los dos envíos. Datos de prueba borrados.
+- **No probado en vivo**: la convocatoria masiva con la línea "Predica: X" — las otras 3
+  integrantes de la iglesia de prueba tienen correos `@gmail.com` de terceros y no se les
+  puede mandar un evento de prueba. La lógica (`unirNombres` + render condicional) es
+  determinística y quedó cubierta por compilación. Que el fundador la pruebe con un evento
+  controlado si quiere ver el HTML renderizado.
