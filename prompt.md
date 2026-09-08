@@ -1,193 +1,152 @@
-# Prompt — Frontend: recuperación de contraseña + asistencia en vivo + detalle de convocatoria
+# Prompt — Frontend: fix CSRF 403 en todas las mutaciones + imágenes 400 en staging
 
-Contexto para copiar/pegar en una sesión de Claude Code sobre el repo del **frontend**
-(Next.js). El backend ya implementó y desplegó su parte en `staging` (rama `staging`,
-Render `evangelicapp-backend.onrender.com`, Supabase `Backend-staging`).
+Copiar/pegar en una sesión de Claude Code sobre el repo del **frontend** (Next.js).
 
-Tres bloques, en orden de tamaño. El **1** es el grande (páginas nuevas). El **2** y **3**
-son ajustes chicos sobre componentes que ya existen.
+El fundador hizo QA de todos los módulos contra el deploy de Cloudflare Workers
+(`evangelicapp.rojascofrem.workers.dev` → backend `evangelicapp-backend.onrender.com`) y le
+aparece, en cada módulo:
+
+- `403 (Forbidden)` en TODA request mutante (POST/PUT/PATCH/DELETE), con el mensaje
+  **"Token CSRF inválido o ausente"** — `/auth/heartbeat`, `/notas`, `/usuarios`,
+  `/ceremonias/*`, `/mi-iglesia`, `/accesos/*`, `/integrantes/*`, `/auth/me`, etc.
+- `400 (Bad Request)` en `/_next/image?url=https%3A%2F%2Fwoerftoeqarupnrggupl.supabase.co%2F...`
+  (logos, fotos de perfil, fotos de integrantes).
+
+**El backend NO cambió y está verificado OK** con curl: login → `/auth/refresh` → mutación
+con `X-CSRF-Token` correcto → 200/204. El problema es 100% del lado del cliente.
 
 ---
 
-## Contrato del backend (real, no lo inventes)
+## Bug 1 — CSRF 403 en todas las mutaciones
 
-### Recuperación de contraseña — 2 endpoints nuevos, públicos
+### Causa (confirmada)
 
-```
-POST /auth/forgot-password
-  body: { "email": string }
-  - Sin sesión. SIEMPRE responde 200 { "ok": true }, exista o no el correo, y
-    aunque el envío del mail falle (anti-enumeración). El frontend no distingue
-    casos: siempre muestra el mismo mensaje neutro.
-  - Throttle: 5 requests / 15 min por IP → un 429 sí puede pasar si el usuario
-    reintenta mucho; mostrar "Esperá unos minutos antes de volver a intentar".
-  - Manda un correo con un link a  <FRONTEND_URL>/recuperar-contrasena/<token>
-  - El token vive 60 minutos y sirve UNA sola vez. Pedir uno nuevo invalida el anterior.
+`api.ts` guarda el `csrfToken` en una variable en memoria (`let csrfToken`). El backend hace
+double-submit: compara el header `X-CSRF-Token` contra la cookie `csrf_token`. Esa cookie es
+**compartida entre pestañas** y se reescribe en cada login/refresh. La variable en memoria
+**no** — es por pestaña.
 
-POST /auth/reset-password
-  body: { "token": string, "newPassword": string }
-  - Sin sesión. El token es el de la URL del link del correo.
-  - newPassword: mínimo 8 caracteres, al menos 1 letra y 1 número
-    (idéntico a la validación de change-password-modal.tsx — reusá ese schema).
-  - 200 { "ok": true }  → contraseña cambiada; redirigir al login.
-  - 400 → token inválido / expirado / ya usado; mensaje del backend en err.message.
-    Ofrecer volver a /recuperar-contrasena para pedir otro link.
-  - Throttle: 10 / 15 min por IP.
-  - Efecto: cambia la contraseña, marca el token usado, cierra las sesiones
-    locales del usuario. El usuario queda deslogueado en todos lados.
-```
+Cuando una pestaña vieja queda abierta y en otro lado se establece una sesión nueva
+(re-login después de un reset de contraseña, otra pestaña, un redeploy), la cookie
+`csrf_token` pasa a valer `W` pero la pestaña vieja sigue mandando `X-CSRF-Token: X` (viejo)
+→ **403 en toda mutación**.
 
-Ambas rutas son **CSRF-exentas** en el backend (no requieren `X-CSRF-Token`), igual que
-`integrantes/registro` y los `responder` de agenda.
+Y no se recupera nunca: `apiFetch` hace refresh+retry **solo ante 401**, no ante 403. El
+`access_token` de esa pestaña sí es válido (se comparte por cookie), así que los GET andan y
+solo fallan las mutaciones — exactamente el síntoma.
 
-### Asistencia a eventos — evento de Realtime nuevo
+El reset de contraseña lo hace muy visible: el backend revoca el refresh token de Supabase
+(confirmado: `/auth/refresh` con el token viejo → 401) pero **no** el `access_token` (vive
+~15 min) ni el store de zustand. La página `/recuperar-contrasena/[token]` redirige a
+`/login?reset=ok`, el store todavía tiene `usuario`, `/login` redirige de vuelta a la app
+→ sesión a medias + `csrfToken` en memoria desincronizado.
 
-El backend ahora emite por Supabase Realtime (mismo canal privado `tenant:<iglesiaId>` que
-ya usás) cuando un integrante responde la convocatoria a un evento:
+### Fix
 
-```
-evento: "asistencia:respondida"
-payload: {
-  eventoId: string,
-  integranteId: string,
-  nombreCompleto: string,
-  estado: "CONFIRMADO" | "RECHAZADO",
-  respondidoAt: string   // ISO
+**1) `src/lib/api.ts` — reintentar una vez ante un 403 de CSRF (igual que el 401).**
+
+En `apiFetch`, justo después del bloque que maneja el 401:
+
+```ts
+let res = await rawFetch(path, options);
+
+if (res.status === 401 && path !== REFRESH_PATH) {
+  const refreshed = await refreshSession();
+  res = refreshed ? await rawFetch(path, options) : res;
+}
+
+// El csrfToken en memoria quedó desincronizado de la cookie csrf_token (sesión
+// rotada en otra pestaña, redeploy, reset de contraseña). refreshSession() trae
+// un csrfToken nuevo y lo guarda; reintentar una vez lo resuelve. Si el refresh
+// tampoco anda (refresh token muerto tras un reset), la sesión es irrecuperable.
+if (
+  res.status === 403 &&
+  MUTATING_METHODS.has(method) &&
+  path !== REFRESH_PATH &&
+  !isCsrfExempt(path)
+) {
+  const csrfErr = await res.clone().json().catch(() => null);
+  if (csrfErr?.message === "Token CSRF inválido o ausente") {
+    if (await refreshSession()) {
+      res = await rawFetch(path, options);
+    } else {
+      setCsrfToken(null);
+      useAuthStore.getState().clearSession();
+      if (typeof window !== "undefined") window.location.href = "/login";
+      throw new ApiError(401, "Tu sesión expiró. Inicia sesión de nuevo.");
+    }
+  }
 }
 ```
 
-El endpoint `GET /agenda/eventos/:id/asistencias` (ya lo usás en `AsistenciasDialog`) sigue
-igual: `{ integranteId, nombreCompleto, email, estado, respondidoAt }[]`.
+(`res.clone()` para no consumir el body antes del manejo de error de más abajo.)
 
-### Convocatoria a la congregación — sin cambios de contrato
+**2) `src/app/recuperar-contrasena/[token]/page.tsx` — desloguear de verdad antes de redirigir.**
 
-El correo a los integrantes ahora menciona al/los predicador(es) invitado(s) que el equipo
-cargó **con nombre**. Es 100% backend. Único matiz de UX: un predicador cargado sin
-`nombre` (solo email) NO se menciona en ese correo. Ver bloque 3.
+El comentario dice "El backend ya cerró las sesiones del usuario" pero no es cierto: el
+`access_token` sigue vivo y el store también. Antes del `router.replace("/login?reset=ok")`:
+
+```ts
+import { setCsrfToken } from "@/lib/api";
+import { useAuthStore } from "@/stores/auth-store";
+// ...
+      await apiFetch<{ ok: true }>("/auth/reset-password", { /* ... */ });
+      setCsrfToken(null);
+      useAuthStore.getState().clearSession();
+      router.replace("/login?reset=ok");
+```
+
+Así el usuario llega a `/login` genuinamente deslogueado y entra limpio con la nueva
+contraseña.
+
+**3) (Opcional, defensa extra) sincronizar el `csrfToken` entre pestañas.** Con un
+`BroadcastChannel("evangelicapp-csrf")`: en `setCsrfToken`, además de setear la variable,
+`postMessage(token)`; y un listener que actualice la variable al recibirlo. No es
+imprescindible si están los fixes 1 y 2, pero elimina la ventana de desincronización.
+
+### Workaround inmediato (mientras no esté el fix)
+
+Cerrar las pestañas viejas de la app y recargar (F5). Cada carga fresca vuelve a pedir un
+`csrfToken` acorde a la cookie.
 
 ---
 
-```
-Implementá lo siguiente en el frontend. El backend ya está listo y desplegado en staging.
+## Bug 2 — `_next/image` 400 en imágenes de Supabase Storage
 
-=====================================================================
-BLOQUE 1 — RECUPERACIÓN DE CONTRASEÑA (páginas nuevas)
-=====================================================================
+### Causa
 
-1. src/lib/api.ts — agregar las 2 rutas nuevas a CSRF_EXEMPT_PATHS:
-     /^\/auth\/forgot-password$/,
-     /^\/auth\/reset-password$/,
-   (son públicas, sin sesión; si un usuario logueado abre la landing en el mismo
-    navegador, su cookie no debe arrastrar la request al circuito de recuperación
-    de csrfToken — mismo motivo que las otras exentas.)
+`next.config.ts` → `images.remotePatterns` solo permite `lkcgiqmgdefhxhckedga.supabase.co`
+(proyecto Supabase `Backend`, el de producción). El deploy de **staging** sirve las
+imágenes desde `woerftoeqarupnrggupl.supabase.co` (`Backend-staging`). El optimizador de
+`next/image` (`/_next/image`) rechaza cualquier host que no esté en `remotePatterns` → 400.
 
-2. src/app/login/page.tsx — agregar un link "¿Olvidaste tu contraseña?" debajo del
-   botón "Iniciar sesión" (o junto al campo de contraseña), que navegue a
-   /recuperar-contrasena. Estilo discreto, consistente con el <p> de "¿No tienes
-   una cuenta?" que ya está abajo.
+### Fix (elegí uno)
 
-3. src/app/recuperar-contrasena/page.tsx — NUEVA. Página pública (sin guard de auth,
-   fuera del layout autenticado — mismo tratamiento que /login).
-   - Un input de email + botón "Enviar enlace".
-   - Al enviar: POST /auth/forgot-password { email } vía apiFetch.
-   - Respuesta 200 (siempre que no sea 429/red): mostrar SIEMPRE el mismo mensaje
-     neutro, ej.: "Si el correo está registrado, te enviamos un enlace para
-     restablecer tu contraseña. Revisá tu bandeja de entrada y spam."
-     Ocultar el formulario tras el envío.
-   - 429: "Hiciste varios intentos seguidos. Esperá unos minutos y volvé a probar."
-   - Error de red: "No pudimos procesar la solicitud. Intentá de nuevo." y reintentar.
-   - Link para volver a /login.
-   - Reusar los componentes de UI del login (Card/Form/Input/Button/Alert) y la
-     misma estética (logo arriba, max-w-sm, etc.).
+**A (recomendado — ya está previsto en el config):** setear `NEXT_IMAGES_UNOPTIMIZED=true`
+en las variables de entorno del deploy de Cloudflare Workers. `next.config.ts` ya tiene
+`images.unoptimized: process.env.NEXT_IMAGES_UNOPTIMIZED === "true"`; con eso `next/image`
+se comporta como `<img>` plano, no pasa por `/_next/image`, y no hay 400. Es la salida
+"gratis" para Cloudflare (la optimización on-the-fly cuesta en CF Workers — ver el comentario
+del propio `next.config.ts`).
 
-4. src/app/recuperar-contrasena/[token]/page.tsx — NUEVA. Página pública. Es la
-   landing del link del correo.
-   - Toma el token del route param (useParams).
-   - Dos campos: "Nueva contraseña" y "Confirmar contraseña" (ambos con toggle
-     mostrar/ocultar, autoComplete="new-password").
-   - Validación (reusá el schema de src/components/onboarding/change-password-modal.tsx):
-       newPassword: z.string().min(8, "...").regex(/(?=.*[a-zA-Z])(?=.*[0-9])/, "...")
-       confirmar: debe ser igual a newPassword (z .refine / superRefine)
-   - El botón "Cambiar contraseña" queda DESHABILITADO hasta que:
-       ambos campos no vacíos + coinciden + cumplen la política.
-   - Al enviar: POST /auth/reset-password { token, newPassword } vía apiFetch.
-     * 200 → redirigir a /login. Mostrar un mensaje de éxito en el login
-       ("Tu contraseña se actualizó. Iniciá sesión con la nueva.") — podés pasarlo
-       por query param (?reset=ok) y que login lo lea, o por un store/toast, lo que
-       ya uses para flashes.
-     * 400 → mostrar err.message del ApiError ("El enlace de recuperación no es
-       válido o expiró. Solicitá uno nuevo.") + un link a /recuperar-contrasena.
-     * Otro error → mensaje genérico + reintento.
-   - NO llames a ningún endpoint autenticado desde esta página. NO toques el
-     auth-store (el usuario no está logueado acá).
-   - Misma estética que /login.
-
-=====================================================================
-BLOQUE 2 — ASISTENCIA A EVENTOS EN VIVO
-=====================================================================
-
-5. src/components/agenda/asistencias-dialog.tsx — hoy hace un fetch una sola vez al
-   abrir. Agregarle Realtime para que la lista se actualice sola mientras está
-   abierto, sin refrescar:
-
-   - Usar el mismo hook que ya usás para "predicador:respondio" en evento-dialog.tsx
-     (useRealtimeEvent). Suscribir el evento "asistencia:respondida".
-   - En el handler: si payload.eventoId === eventoId (el del dialog), actualizar el
-     array `asistencias`:
-       setAsistencias(prev => prev.map(a =>
-         a.integranteId === payload.integranteId
-           ? { ...a, estado: payload.estado, respondidoAt: payload.respondidoAt }
-           : a
-       ))
-     Los contadores por grupo (Confirmaron / Sin responder / Rechazaron) ya se
-     derivan de `asistencias` con .filter, así que se re-renderizan solos.
-   - Ojo: el hook debe estar suscrito solo mientras el dialog está montado/abierto
-     (mismo patrón condicional que en evento-dialog: `if (!open) return` dentro del
-     efecto del hook, o desmontar el subcomponente cuando open=false).
-   - Si tu useRealtimeEvent no acepta un "enabled"/condición, envolvé el contenido
-     del dialog en un subcomponente que solo se monte con open=true (como hoy hace
-     evento-dialog con predicadores), y poné el hook ahí.
-
-=====================================================================
-BLOQUE 3 — DETALLE DEL PREDICADOR EN LA CONVOCATORIA (ajuste menor)
-=====================================================================
-
-6. En el formulario de crear evento (evento-dialog.tsx, sección de agregar
-   predicadores para eventos tipo CULTO):
-   - El backend, en el correo a la congregación, SOLO menciona a los predicadores
-     que tienen `nombre` cargado (un email suelto no se muestra a los integrantes).
-   - Cuando el evento tiene "notificar a integrantes" activado Y hay predicadores,
-     mostrar un hint junto al campo nombre del predicador:
-       "El nombre aparece en el correo a la congregación. Sin nombre, no se
-        menciona al predicador."
-   - NO hagas el nombre obligatorio (el backend lo acepta vacío). Es solo un hint.
-   - Si ya hay un textito de ayuda en esa sección, sumale esta aclaración.
-
-=====================================================================
-QUÉ NO HACER
-=====================================================================
-- No agregar campos al body de /auth/reset-password ni /auth/forgot-password
-  (ValidationPipe con forbidNonWhitelisted rechaza cualquier extra).
-- No tocar el flujo de cookies/CSRF de apiFetch más allá de sumar las 2 rutas a
-  CSRF_EXEMPT_PATHS.
-- No usar supabase-js para nada nuevo (Realtime ya está resuelto con tu hook).
-- Las páginas de recuperación son públicas: no las metas bajo el layout que exige
-  sesión ni les pongas useRequireAuth.
-```
+**B:** en `next.config.ts`, derivar el host permitido de `NEXT_PUBLIC_SUPABASE_URL` en vez
+de hardcodear `lkcgiqmgdefhxhckedga.supabase.co`, o agregar
+`woerftoeqarupnrggupl.supabase.co` a `remotePatterns`. Menos limpio (hay que tocar el config
+por cada proyecto) pero mantiene la optimización donde sí es gratis (Vercel).
 
 ---
 
-**Notas para el equipo (no son parte del prompt):**
+## Qué NO tocar
 
-- **Resend**: el backend ya soporta `MAIL_PROVIDER=resend`. En el Render de staging hay
-  que setear `MAIL_PROVIDER=resend`, `RESEND_API_KEY=re_...` y
-  `MAIL_FROM="EvangelicApp <no-reply@evangelicapp.cl>"` (dominio `evangelicapp.cl` ya
-  verificado en Resend). Sin eso, los correos siguen saliendo por SMTP local (Nodemailer)
-  y no llegan a nadie en staging. Es config de infra, no de código.
-- **Revocación de sesiones tras reset**: el backend cierra las `SesionActividad` locales
-  pero no puede revocar los refresh tokens de Supabase sin un access token del usuario
-  (que en un "olvidé mi contraseña" casi nunca hay). Riesgo acotado a la vida de un
-  refresh token. Documentado en `docs/` del backend.
-- **MCP de Resend**: el `.mcp.json` del backend ya tiene el server `resend` configurado
-  (`npx -y resend-mcp`), lee `RESEND_API_KEY` del entorno. Sirve para probar envíos /
-  gestionar dominios y plantillas desde una sesión de Claude Code.
+- El backend está bien. No hace falta ningún cambio ahí para estos dos bugs.
+- No cambiar el flujo de cookies/CSRF de `apiFetch` más allá del retry del Bug 1.
+- El `X-CSRF-Token` y la cookie `csrf_token` ya están bien nombrados y alineados con el
+  backend — no es un problema de nombres ni de CORS (el 403 llega con body JSON del backend,
+  la request pasa el preflight sin problema).
+
+---
+
+**Nota para el equipo (no es parte del prompt):** además de estos dos, sigue pendiente el
+bloque de features anterior (recuperación de contraseña ya se implementó; falta el
+`asistencia:respondida` en `AsistenciasDialog` si no se hizo, y el hint del predicador).
+Verificar contra este mismo checklist tras el fix.

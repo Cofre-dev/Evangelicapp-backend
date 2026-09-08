@@ -2129,3 +2129,45 @@ SuperAdmin.
   puede mandar un evento de prueba. La lógica (`unirNombres` + render condicional) es
   determinística y quedó cubierta por compilación. Que el fundador la pruebe con un evento
   controlado si quiere ver el HTML renderizado.
+
+## [2026-09-08 18:10] Diagnóstico: 403 "Token CSRF inválido o ausente" en todo el frontend — el backend NO está roto
+
+El fundador hizo QA de todos los módulos contra el deploy de Cloudflare Workers y le
+aparecía `403 "Token CSRF inválido o ausente"` en toda request mutante, además de `400` en
+`/_next/image` para imágenes de Supabase Storage. Pidió verificar y arreglar.
+
+**Verificado con curl contra el backend desplegado (staging):** el backend está correcto.
+`CsrfMiddleware` + `setAuthCookies` + `RefreshOriginMiddleware` funcionan bien:
+- login → `csrf_token` cookie == `csrfToken` del body; `POST /auth/heartbeat` y `PATCH
+  /auth/me` con cookies + `X-CSRF-Token` correcto → 204 / 200.
+- `POST /auth/refresh` sin header (lo que hace el frontend en página fresca) → 200 con
+  `csrfToken` nuevo + cookies nuevas. Exento de CSRF correctamente.
+- Con cookies + header ausente/incorrecto → 403 (comportamiento esperado).
+- **No se tocó nada del backend.**
+
+**Causa real (frontend):** `api.ts` guarda el `csrfToken` en una variable en memoria por
+pestaña; la cookie `csrf_token` es compartida entre pestañas y se reescribe en cada
+login/refresh. Una pestaña vieja + una sesión nueva establecida en otro lado (re-login tras
+reset de contraseña, otra pestaña, redeploy) → header viejo vs cookie nueva → 403 en toda
+mutación. Y `apiFetch` solo hace refresh+retry ante 401, nunca ante 403 → no se recupera.
+El reset de contraseña lo hace muy visible: **verificado que `POST /auth/reset-password`
+revoca el refresh token de Supabase** (`/auth/refresh` con el token viejo → 401) pero **no**
+el `access_token` (JWT stateless, vive ~15 min) ni el store de zustand, y la página de reset
+redirige a `/login` sin llamar `clearSession()`.
+
+**El `_next/image` 400** es config del frontend: `next.config.ts` solo permite el host
+Supabase de producción (`lkcgiqmgdefhxhckedga...`) en `remotePatterns`; staging sirve desde
+`woerftoeqarupnrggupl...` (`Backend-staging`). Fix: `NEXT_IMAGES_UNOPTIMIZED=true` en el
+deploy de Cloudflare (ya previsto en el config) o agregar el host.
+
+**Cambios (solo docs):** `prompt.md` con el fix exacto de los 2 bugs (retry de `apiFetch`
+ante 403 de CSRF + `clearSession()` en la página de reset + `NEXT_IMAGES_UNOPTIMIZED`).
+
+**Recomendación de hardening (no implementada, pendiente de confirmar):** el `access_token`
+sobrevive ~15 min a un reset de contraseña. Para cerrarlo del todo: `passwordChangedAt` en
+`Usuario`, seteado en `resetPassword`/`changePassword`, y `JwtAuthGuard` rechazando tokens
+con `iat < passwordChangedAt`. Toca el guard de auth + una migración — se confirma antes de
+hacerlo.
+
+**Funcionalidad:** deja claro que el 403 masivo NO es una regresión del backend (para que la
+próxima sesión no lo persiga ahí) y entrega el fix accionable al frontend.
