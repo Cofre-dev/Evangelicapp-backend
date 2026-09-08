@@ -65,7 +65,11 @@ export class IntegrantesService {
     return runAsService(() => this.registrarComoServicio(qrToken, dto, foto));
   }
 
-  private async registrarComoServicio(qrToken: string, dto: RegistrarIntegranteDto, foto?: Express.Multer.File) {
+  private async registrarComoServicio(
+    qrToken: string,
+    dto: RegistrarIntegranteDto,
+    foto?: Express.Multer.File,
+  ) {
     const iglesia = await this.findIglesiaActivaPorToken(qrToken);
     const fotoUrl = foto
       ? await this.supabaseStorage.upload(

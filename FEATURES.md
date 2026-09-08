@@ -1835,3 +1835,131 @@ corregidos. `AuthService#refreshTokens` hace el mismo bootstrap por-id pero con 
 `AuthService#validateUser` (login) corre bajo `runAsService()` (rol `SERVICE`, privilegiado
 por diseño) — tampoco aplica, cualquier query pasa RLS sin importar `iglesiaId`. No quedó
 ningún tercer caso pendiente.
+
+## [2026-09-07 13:25] Migración socket.io → Supabase Realtime (Broadcast): fase parallel-run del backend
+
+Pedido del fundador: sacar socket.io (`@nestjs/websockets` + `@nestjs/platform-socket.io`
++ `socket.io`), que duplica lo que ya da Supabase Realtime y suma un servicio stateful
+propio. La Fase 5 (2026-08-13) había montado ese WebSocket propio justamente porque el
+aislamiento multi-tenant de `postgres_changes` dependía de RLS y RLS no existía; RLS ya
+está (Fase 8), así que la razón que lo justificaba se cayó.
+
+Antes de tocar código se le presentaron 3 decisiones y las confirmó: (1) **Broadcast**,
+no Postgres Changes — los payloads ya son DTOs curados y 2 de 3 eventos salen de rutas
+públicas sin identidad; (2) **token corto emitido por el backend** para autorizar el
+WebSocket del navegador — el `access_token` de sesión no sirve (lo emite el proyecto
+`Backend-auth-test`, distinto del proyecto `Backend` donde corre Realtime, y vive en
+cookie httpOnly ilegible por JS); (3) **parallel-run** — emitir por los dos transportes a
+la vez, migrar el frontend, verificar en staging, y recién ahí borrar socket.io.
+
+Esto reversa una decisión documentada ("el navegador nunca corre `supabase-js` ni le
+habla a Supabase directamente", `README.md`): con Realtime nativo el navegador sí abre un
+WebSocket directo a Supabase. El frontend suma `@supabase/supabase-js` **solo para
+Realtime** — la API de negocio se sigue consumiendo igual.
+
+**Plan completo y estado:** `docs/realtime-migration.md` (nuevo).
+
+**Cambios — `src/modules/realtime/`:**
+- `realtime-broadcast.service.ts` (nuevo): `POST` al endpoint REST
+  `/realtime/v1/api/broadcast` del proyecto con la `service_role` key (exenta de RLS al
+  emitir). Best-effort, no lanza — un fallo de red hacia Supabase no rompe la request de
+  negocio. Escotilla `REALTIME_BROADCAST_ENABLED=false` para apagar el emit por Supabase
+  sin redeploy mientras dure el solapamiento.
+- `realtime-token.service.ts` (nuevo): firma un JWT HS256 de ~30 min (`jose`, ya en deps)
+  con `role: authenticated` + claims `iglesia_id` / `is_superadmin`, y resuelve el topic
+  (`superadmin` o `tenant:{iglesiaId}`) desde el rol/iglesiaId del JWT de sesión, nunca de
+  un parámetro del request. Tolerante a `SUPABASE_JWT_SECRET` ausente (responde 503).
+- `realtime-token.controller.ts` (nuevo): `GET /realtime/token` (solo `JwtAuthGuard` —
+  cualquier sesión válida; `@Throttle` 30/min). El guard ya revalida
+  `activo`/`iglesia.estado`/`mustChangePassword` en cada llamada, así que una iglesia
+  suspendida no renueva token (el que tenga expira en ≤30 min).
+- `realtime.service.ts`: ahora hace fan-out a socket.io **y** a `RealtimeBroadcastService`
+  en `emitAIglesia`/`emitASuperAdmin`. Las 3 services de negocio (`IglesiasService`,
+  `PredicadoresService`, `IntegrantesService`) no cambian.
+- `realtime-rooms.util.ts`: suma `SUPERADMIN_TOPIC` / `tenantTopic()` junto a las rooms
+  legacy de socket.io (prefijo `tenant:` distinto de `iglesia:` para distinguir en logs
+  por qué transporte llegó cada evento).
+- `realtime.module.ts`: registra el controller y los 2 servicios nuevos.
+- `realtime.gateway.ts`: **sin cambios** — socket.io sigue siendo el transporte real
+  hasta que el frontend migre.
+
+**Cambios — otros:**
+- `prisma/migrations/20260907131802_realtime_broadcast_authorization/migration.sql`
+  (nuevo, **escrito sin aplicar**): policy RLS de `SELECT` sobre `realtime.messages` —
+  un cliente solo recibe broadcasts del topic de su iglesia (claim `iglesia_id`) o de
+  `superadmin` (claim `is_superadmin`). Sin policy de `INSERT`: los clientes no emiten.
+  La evalúa el servicio de Realtime con su propia conexión, así que es independiente del
+  pendiente `DATABASE_URL`→`app_runtime`. Aplicar por MCP a `Backend-staging` y luego
+  `Backend`, igual que la migración de RLS de la Fase 8.
+- `.env.example`: `SUPABASE_JWT_SECRET` (JWT secret del proyecto `Backend`, para firmar
+  el token corto), `REALTIME_TOKEN_TTL_SECONDS` (default 1800), `REALTIME_BROADCAST_ENABLED`.
+- `prompt.md` (raíz): brief para el frontend — agregar `@supabase/supabase-js`, quitar
+  `socket.io-client`, reemplazar `use-socket.ts` por `use-realtime.ts` (token + `setAuth`
+  + canal privado + refresh antes de expirar), migrar los 4 consumidores. Nombres de
+  evento y forma de payloads sin cambios.
+
+**Verificado:** `npm run build` y `npm test` (18/18) limpios; `eslint` limpio en todos
+los archivos tocados. **No verificado:** nada contra Supabase real todavía (falta aplicar
+la migración de RLS y setear `SUPABASE_JWT_SECRET`) — es la fase parallel-run, socket.io
+sigue siendo el transporte activo. Nota: `src/modules/integrantes/integrantes.service.ts`
+tiene un error de `prettier/prettier` **preexistente** en la rama `staging`, ajeno a este
+cambio.
+
+**Pendiente (ver `docs/realtime-migration.md`):** aplicar la migración de RLS a los 2
+proyectos + desactivar "Allow public access" en Realtime Settings; `SUPABASE_JWT_SECRET`
+en Render (staging y prod); trabajo de frontend (`prompt.md`); smoke test end-to-end en
+staging; y el PR de limpieza que borra `realtime.gateway.ts` + las 3 deps de socket.io.
+
+**Funcionalidad:** deja el backend listo para que el frontend migre a Supabase Realtime
+sin ventana de corte — durante la transición cada evento sale por socket.io y por
+Broadcast a la vez, así que ninguna de las 3 pantallas en vivo se rompe mientras el
+frontend está a medio migrar.
+
+## [2026-09-08 12:35] Realtime: policy RLS aplicada a staging, fix de prettier preexistente, rename de env var
+
+Continuación de la entrada anterior. El fundador dejó el "Legacy JWT secret" del proyecto
+`Backend` en `.env` como `SUPABASE_JWT_ACCESS_SECRET`, está reseteando Render, y ya pasó
+`prompt.md` al frontend. Pidió: arreglar el error de prettier preexistente y aplicar la
+migración de RLS por MCP.
+
+**Cambios — código:**
+- `realtime-token.service.ts`: lee `SUPABASE_JWT_ACCESS_SECRET` (era `SUPABASE_JWT_SECRET`
+  en la entrada de ayer) — nombre que el fundador ya configuró en `.env`/Render.
+- `realtime-broadcast.service.ts`: el trim de `/` finales de `SUPABASE_URL` pasó de
+  `.replace(/\/+$/, '')` a un helper `stripTrailingSlashes` sin regex — SonarQube marcaba
+  `S8786` (backtracking super-lineal) en ese patrón. También se sacó una línea en blanco
+  que había quedado entre el JSDoc y `@Injectable()`.
+- `.env.example`, `docs/realtime-migration.md`, `prompt.md`: `SUPABASE_JWT_SECRET` →
+  `SUPABASE_JWT_ACCESS_SECRET` y menciones asociadas.
+- `src/modules/integrantes/integrantes.service.ts`: **fix de un error de `prettier/prettier`
+  preexistente en `staging`** (la firma de `registrarComoServicio` pasaba de 110 columnas
+  y no estaba wrappeada). Ajeno a la migración de Realtime — se arregló porque bloqueaba
+  `lint:ci` y el fundador lo pidió antes de seguir. Cambio mínimo: solo se envolvió esa
+  firma en varias líneas, nada más del archivo.
+
+**Cambios — infra (MCP de Supabase, proyecto `Backend-staging` `woerftoeqarupnrggupl`):**
+- Aplicada la policy RLS de `realtime.messages` (`SELECT` para `authenticated`,
+  comparando `realtime.topic()` contra los claims `iglesia_id` / `is_superadmin` del JWT
+  corto). Se aplicó en 2 pasos: la versión inicial y un endurecimiento
+  (`..._harden_tenant_claim`) porque un token sin `iglesia_id` matcheaba el topic literal
+  `tenant:` — ahora el claim tiene que existir y no estar vacío. El archivo Prisma
+  `20260907131802_realtime_broadcast_authorization/migration.sql` ya trae la versión
+  endurecida en un solo `CREATE POLICY` (es lo que se aplicará a prod).
+- Verificado: `realtime.messages` con RLS activa y `authenticated` con `SELECT`; la
+  expresión de la policy probada con 9 casos simulados (superadmin/tenant × topic
+  propio/ajeno/vacío/claim ausente) — todos correctos. `get_advisors` no reporta nada
+  nuevo por este cambio (los 2 hallazgos de `rls_disabled_in_public` son `refresh_tokens`
+  y `_prisma_migrations`, preexistentes y ajenos).
+
+**Verificado (código):** `npm run lint:ci` (ahora **sin errores**, incluido el de
+integrantes), `npm run build` y `npm test` (18/18) limpios.
+
+**Pendiente (sin cambios respecto a la entrada de ayer, más):** aplicar la misma
+migración a `Backend` (prod) por MCP **después del smoke test en staging**; desactivar
+"Allow public access" en Realtime Settings de cada proyecto (dashboard, sin MCP);
+`prisma migrate resolve --applied 20260907131802_realtime_broadcast_authorization` cuando
+haya conectividad directa; trabajo de frontend; y el PR de limpieza de socket.io.
+
+**Funcionalidad:** deja staging listo a nivel de base de datos para que, apenas Render
+tenga el secret y el frontend migre, se pueda hacer el smoke test end-to-end de Realtime
+sin más pasos de infra.
