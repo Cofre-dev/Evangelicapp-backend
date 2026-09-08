@@ -157,6 +157,9 @@ Nada de socket.io se removió todavía.
   - `iglesia:actualizada` (topic `superadmin`) no se probó en vivo por falta de
     sesión SuperAdmin, pero usa el mismo `publish()` y la rama `superadmin` de la
     policy quedó cubierta por los 9 casos SQL.
+  - **Verificado además en el navegador** por el fundador (2026-09-08) contra el
+    frontend de staging en Cloudflare: el censo en vivo se actualiza en directo
+    al registrarse un integrante por QR.
 - [ ] **Aplicar la migración a `Backend`** (`lkcgiqmgdefhxhckedga`, prod) por MCP +
       desactivar "Allow public access" ahí + `SUPABASE_JWT_ACCESS_SECRET` en el
       Render de prod. Cuando el frontend de prod despliegue con Realtime.

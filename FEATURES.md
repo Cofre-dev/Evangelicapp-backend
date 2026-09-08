@@ -2012,3 +2012,10 @@ limpieza de socket.io. Ver `docs/realtime-migration.md`.
 **Funcionalidad:** confirma que la ruta completa nueva (endpoint de token → canal privado
 autorizado por RLS → broadcast del backend por REST) funciona de punta a punta en staging,
 incluido el aislamiento multi-tenant, antes de tocar el frontend en el navegador o prod.
+
+**Actualización (2026-09-08, ~13:25):** el fundador verificó en el navegador contra el
+frontend de staging en Cloudflare — el censo en vivo (`integrante:registrado`) se actualiza
+en directo al registrarse un integrante por QR. Con esto la fase parallel-run queda
+validada de punta a punta (scripted + navegador real). Falta: (1) merge del frontend a su
+rama principal, (2) aplicar migración RLS + "Allow public access" off + `SUPABASE_JWT_ACCESS_SECRET`
+en el entorno de prod cuando exista/se confirme, (3) PR de limpieza de socket.io.
