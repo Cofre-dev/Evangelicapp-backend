@@ -2019,3 +2019,80 @@ en directo al registrarse un integrante por QR. Con esto la fase parallel-run qu
 validada de punta a punta (scripted + navegador real). Falta: (1) merge del frontend a su
 rama principal, (2) aplicar migración RLS + "Allow public access" off + `SUPABASE_JWT_ACCESS_SECRET`
 en el entorno de prod cuando exista/se confirme, (3) PR de limpieza de socket.io.
+
+## [2026-09-08 14:50] Resend como proveedor de correo + 3 features (asistencia en vivo, plantilla de predicador, recuperación de contraseña)
+
+Pedido del fundador: Resend pasa a ser el proveedor de correo (dominio `evangelicapp.cl`
+ya verificado) hasta que en la v2.0 se conecte WhatsApp Business; mientras, el correo es el
+único canal hacia la congregación. Más 3 features.
+
+**MCP de Resend** (`.mcp.json`): agregado el server `resend` (`npx -y resend-mcp`, stdio,
+lee `RESEND_API_KEY` del entorno + `SENDER_EMAIL_ADDRESS` con default
+`no-reply@evangelicapp.cl`). Para probar envíos / gestionar dominios y plantillas desde
+Claude Code.
+
+**Proveedor de correo:** el backend ya soportaba `MAIL_PROVIDER=resend` + `ResendEmailProvider`
+(no cambia). Se actualizó `.env.example` para dejar claro que en staging/prod va
+`MAIL_PROVIDER=resend`, `RESEND_API_KEY=re_...` y `MAIL_FROM` con `@evangelicapp.cl` (ya sin
+el límite de sandbox de `onboarding@resend.dev`). Setear esas 3 en el Render de staging es
+config de infra pendiente para el fundador.
+
+**Feature 2 — plantilla de predicador aparte + predicador en el correo a la congregación:**
+- `MailService#enviarInvitacionPredicador`: plantilla reescrita, tono formal (pastor externo,
+  no asistente) — saludo con el nombre si lo hay, tabla fecha/hora/lugar, logo de la iglesia,
+  firma "Equipo pastoral". Nuevos params: `nombrePredicador`, `ubicacion`, `logoUrl`.
+- `MailService#enviarConvocatoriaEvento`: nuevo param `predicadoresInvitados: string[]` — si
+  no está vacío, el correo agrega "Predica(n): <nombres>"; si el evento no tiene predicador
+  (o ninguno tiene nombre cargado), esa línea no aparece (pedido explícito).
+- `EventosService#invitarPredicadores` ahora devuelve los nombres de los predicadores
+  cargados CON nombre; `create()` los pasa a `notificarIntegrantes` → `enviarConvocatoriaEvento`.
+  Un predicador solo con email no se menciona a la congregación (un email suelto no aporta).
+- Helper `unirNombres` ("Ana", "Ana y Beto", "Ana, Beto y Caro") y `logoImgTag` (extraído,
+  compartido entre las 2 plantillas).
+
+**Feature 1 — asistencia de integrantes a un evento, en vivo:**
+- `REALTIME_EVENTS.ASISTENCIA_RESPONDIDA` (`'asistencia:respondida'`), nuevo.
+- `AsistenciasService#responder`: tras registrar el RSVP, emite `emitAIglesia(iglesiaId,
+  ASISTENCIA_RESPONDIDA, { eventoId, integranteId, nombreCompleto, estado, respondidoAt })`
+  — mismo patrón que `predicador:respondio`. `AsistenciasService` ahora inyecta
+  `RealtimeService` (el `include` del `findUnique` corre bajo `runAsService`, igual que
+  Predicadores). Sale por socket.io + Supabase Broadcast (parallel-run).
+- Frontend (ver `prompt.md`): `AsistenciasDialog` se suscribe a `asistencia:respondida` y
+  parcha la lista sin refrescar.
+
+**Feature 3 — recuperación de contraseña ("olvidé mi contraseña"):**
+- Schema: modelo `PasswordResetToken` (`tokenHash` SHA-256, `expiresAt`, `usedAt`,
+  `usuarioId`). Migración `20260908144025_add_password_reset_token` — tabla nueva y aislada,
+  con RLS activa (policy `service_only` → `app_is_privileged()`, todo su acceso es bajo
+  `runAsService`). Aplicada a `Backend-staging` por MCP + fila de reconciliación en
+  `_prisma_migrations` (Render no corre `prisma migrate deploy`). **`Backend` (prod) NO la
+  tiene todavía** — si se corre el backend local (apunta a `Backend`), hay que aplicarla ahí.
+- `POST /auth/forgot-password { email }` — público, CSRF-exento, throttle 5/15min. Siempre
+  200 (anti-enumeración); un 500 = fallo real de envío. Genera token (hex CSPRNG), guarda
+  su hash, invalida los pedidos previos sin usar, manda
+  `MailService#enviarRecuperacionContrasena` (link a `<FRONTEND_URL>/recuperar-contrasena/<token>`,
+  vive 60 min, un solo uso).
+- `POST /auth/reset-password { token, newPassword }` — público, CSRF-exento, throttle
+  10/15min. Valida token (existe / sin usar / no expirado / usuario activo), fija la
+  contraseña nueva (bcrypt local + `syncPassword`/`mirrorUsuario` a Supabase, best-effort,
+  igual que `changePassword`), marca el token usado y cierra las `SesionActividad` locales,
+  todo en una `withTenantTransaction`. `newPassword`: misma política que `ChangePasswordDto`
+  (≥8, ≥1 letra + ≥1 número).
+- `AuthModule` ahora importa `MailModule`. `app.module.ts`: las 2 rutas nuevas en el
+  `.exclude()` de CSRF.
+- Limitación conocida (documentada en `prompt.md`): no se revocan los refresh tokens de
+  Supabase (no hay access token del usuario en un reset) — riesgo acotado a la vida de un
+  refresh token.
+
+**Verificado:** `npm run build`, `npm run lint:ci`, `npm test` (18/18) limpios.
+
+**Pendiente:** trabajo de frontend (`prompt.md`: 2 páginas nuevas de recuperación + link en
+login + `asistencia:respondida` en `AsistenciasDialog` + hint del nombre de predicador);
+`MAIL_PROVIDER=resend` + `RESEND_API_KEY` + `MAIL_FROM` en el Render de staging; aplicar
+`20260908144025` a `Backend` si se va a correr local; smoke test end-to-end.
+
+**Funcionalidad:** deja el correo listo para hablarle a la congregación por Resend, hace que
+el equipo vea las confirmaciones a un evento en tiempo real, separa el tono del correo al
+predicador invitado del de la convocatoria masiva (mencionándolo en esta última solo si
+corresponde), y da a los usuarios una forma de recuperar el acceso sin depender del
+SuperAdmin.

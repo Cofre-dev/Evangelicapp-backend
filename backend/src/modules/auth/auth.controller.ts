@@ -25,7 +25,9 @@ import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { AuthService, LoginResponse, ValidatedLogin } from './auth.service';
 import { clearAuthCookies, setAuthCookies } from './cookies';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
 import { fotoPerfilMulterOptions } from './foto-perfil-upload.config';
 import { LocalAuthGuard } from './guards/local-auth.guard';
@@ -78,6 +80,33 @@ export class AuthController {
     setAuthCookies(res, this.config, { accessToken, refreshToken, csrfToken: body.csrfToken });
 
     return body;
+  }
+
+  /**
+   * "Olvidé mi contraseña" (link en el login). Público, sin sesión. SIEMPRE
+   * responde `{ ok: true }` aunque el correo no exista o esté inactivo — no
+   * filtra qué correos están registrados. Un 500 (fallo real de envío de
+   * correo) tampoco filtra existencia. Throttle agresivo por IP.
+   */
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 5, ttl: minutes(15) } })
+  async forgotPassword(@Body() dto: ForgotPasswordDto): Promise<{ ok: true }> {
+    await this.authService.requestPasswordReset(dto.email);
+    return { ok: true };
+  }
+
+  /**
+   * Consume el link de recuperación (landing `/recuperar-contrasena/:token`).
+   * Público. 400 si el token no es válido/expiró/ya se usó; el frontend
+   * redirige al login tras el 200.
+   */
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: minutes(15) } })
+  async resetPassword(@Body() dto: ResetPasswordDto): Promise<{ ok: true }> {
+    await this.authService.resetPassword(dto.token, dto.newPassword);
+    return { ok: true };
   }
 
   /**

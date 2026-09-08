@@ -1,13 +1,21 @@
-import { ForbiddenException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { EstadoIglesia, ModuloSistema, PlanIglesia, Rol, Usuario } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
 import { runAsService, updateTenantContext } from '../../common/context/tenant-context';
 import { IglesiaSuspendidaException } from '../../common/exceptions/iglesia-suspendida.exception';
 import { calcularEstadoFacturacion } from '../../common/utils/calcular-facturacion';
 import { generateCsrfToken } from '../../common/utils/generate-csrf-token';
+import { generateSecureToken } from '../../common/utils/generate-secure-token';
 import { PrismaService } from '../../prisma/prisma.service';
+import { MailService } from '../mail/mail.service';
 import { SupabaseAuthService, SupabaseSession } from '../../supabase/supabase-auth.service';
 import { SupabaseJwtVerifierService } from '../../supabase/supabase-jwt-verifier.service';
 import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
@@ -46,6 +54,9 @@ export interface ValidatedLogin {
   session: SupabaseSession;
 }
 
+/** Vida del link de "olvidé mi contraseña" (ver requestPasswordReset). */
+const PASSWORD_RESET_TTL_MINUTES = 60;
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -55,6 +66,7 @@ export class AuthService {
     private readonly supabaseStorage: SupabaseStorageService,
     private readonly supabaseAuth: SupabaseAuthService,
     private readonly supabaseJwtVerifier: SupabaseJwtVerifierService,
+    private readonly mailService: MailService,
   ) {}
 
   /**
@@ -351,6 +363,106 @@ export class AuthService {
     if (accessToken) {
       await this.supabaseAuth.signOut(accessToken, 'global');
     }
+  }
+
+  /**
+   * "Olvidé mi contraseña" desde el login (ruta pública `POST /auth/forgot-password`).
+   * SIEMPRE responde 200 desde el controller aunque la cuenta no exista o esté
+   * inactiva — no filtra qué correos están registrados. Corre en `runAsService`
+   * (Fase 8): en este punto no hay identidad, igual que `validateUser`.
+   *
+   * Solo el último link pedido sirve: cada pedido nuevo invalida los anteriores
+   * que sigan sin usar.
+   */
+  async requestPasswordReset(email: string): Promise<void> {
+    return runAsService(() => this.requestPasswordResetComoServicio(email));
+  }
+
+  private async requestPasswordResetComoServicio(email: string): Promise<void> {
+    const usuario = await this.prisma.usuario.findUnique({ where: { email } });
+    if (!usuario || !usuario.activo) {
+      return;
+    }
+
+    const rawToken = generateSecureToken();
+    const ahora = new Date();
+
+    await this.prisma.withTenantTransaction(async (tx) => {
+      await tx.passwordResetToken.updateMany({
+        where: { usuarioId: usuario.id, usedAt: null },
+        data: { usedAt: ahora },
+      });
+      await tx.passwordResetToken.create({
+        data: {
+          usuarioId: usuario.id,
+          tokenHash: this.hashResetToken(rawToken),
+          expiresAt: new Date(ahora.getTime() + PASSWORD_RESET_TTL_MINUTES * 60_000),
+        },
+      });
+    });
+
+    // Se propaga un fallo de envío (el controller devuelve 500): un error de
+    // infraestructura de correo no revela si la cuenta existe, y sí evita dejar
+    // al usuario esperando un mail que nunca salió.
+    await this.mailService.enviarRecuperacionContrasena({
+      email: usuario.email,
+      nombre: usuario.nombre,
+      token: rawToken,
+      expiraEnMinutos: PASSWORD_RESET_TTL_MINUTES,
+    });
+  }
+
+  /**
+   * Consume el link de recuperación (`POST /auth/reset-password`). Valida el token
+   * (existe, sin usar, no expirado, usuario activo), fija la contraseña nueva en el
+   * hash local Y la sincroniza a Supabase (misma lógica que `changePassword`), marca
+   * el token como usado y cierra las sesiones locales abiertas del usuario.
+   */
+  async resetPassword(rawToken: string, newPassword: string): Promise<void> {
+    return runAsService(() => this.resetPasswordComoServicio(rawToken, newPassword));
+  }
+
+  private async resetPasswordComoServicio(rawToken: string, newPassword: string): Promise<void> {
+    const registro = await this.prisma.passwordResetToken.findUnique({
+      where: { tokenHash: this.hashResetToken(rawToken) },
+      include: { usuario: true },
+    });
+
+    const ahora = new Date();
+    if (!registro || registro.usedAt || registro.expiresAt < ahora || !registro.usuario.activo) {
+      throw new BadRequestException('El enlace de recuperación no es válido o expiró. Solicitá uno nuevo.');
+    }
+
+    const usuario = registro.usuario;
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+
+    await this.prisma.withTenantTransaction(async (tx) => {
+      await tx.usuario.update({
+        where: { id: usuario.id },
+        data: { password: passwordHash, mustChangePassword: false },
+      });
+      await tx.passwordResetToken.update({ where: { id: registro.id }, data: { usedAt: ahora } });
+      await tx.sesionActividad.updateMany({
+        where: { usuarioId: usuario.id, finAt: null },
+        data: { finAt: ahora },
+      });
+    });
+
+    // Sincroniza a Supabase Auth (best-effort, igual que changePassword): si falla, el
+    // próximo login se autosana vía el fallback de validateUser.
+    const sync = usuario.supabaseUserId
+      ? this.supabaseAuth.syncPassword(usuario.supabaseUserId, newPassword)
+      : this.supabaseAuth.mirrorUsuario(usuario, newPassword);
+    await sync.catch((error: Error) => {
+      this.logger.warn(
+        `No se pudo sincronizar la contraseña recuperada de ${usuario.id} a Supabase Auth: ${error.message}`,
+      );
+    });
+  }
+
+  /** SHA-256 hex del token del link — en la BD solo vive el hash, nunca el valor. */
+  private hashResetToken(rawToken: string): string {
+    return createHash('sha256').update(rawToken).digest('hex');
   }
 
   /** Autoedición del perfil: solo datos personales. Username/email/rol quedan fuera de alcance. */

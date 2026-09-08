@@ -4,9 +4,14 @@ import { EMAIL_PROVIDER, EmailProvider } from './providers/email-provider.interf
 
 interface InvitacionPredicadorParams {
   email: string;
+  /** Nombre del predicador invitado, si el equipo pastoral lo cargó; solo para el saludo. */
+  nombrePredicador: string | null;
   nombreIglesia: string;
   tituloEvento: string;
   fecha: Date;
+  ubicacion: string | null;
+  /** Tal cual `Iglesia.logoUrl`: URL pública del bucket de Storage, o null. */
+  logoUrl: string | null;
   tokenConfirmacion: string;
 }
 
@@ -31,7 +36,29 @@ interface ConvocatoriaEventoParams {
   logoUrl: string | null;
   /** Nombre completo del pastor/usuario que creó el evento; null si Evento.creadoPorId es null. */
   nombreCreador: string | null;
+  /**
+   * Nombres de los predicadores invitados que el equipo cargó CON nombre (los que
+   * quedaron sin nombre no se listan — en un correo a la congregación un email suelto
+   * no aporta). Vacío si no hay ninguno: entonces el correo no menciona predicador.
+   */
+  predicadoresInvitados: string[];
   tokenConfirmacion: string;
+}
+
+interface RecuperacionContrasenaParams {
+  email: string;
+  nombre: string;
+  token: string;
+  /** Minutos de validez del enlace, para decirlo en el cuerpo del correo. */
+  expiraEnMinutos: number;
+}
+
+/** "Ana", "Ana y Beto", "Ana, Beto y Caro" — para listar predicadores en prosa. */
+function unirNombres(nombres: string[]): string {
+  if (nombres.length <= 1) {
+    return nombres[0] ?? '';
+  }
+  return `${nombres.slice(0, -1).join(', ')} y ${nombres[nombres.length - 1]}`;
 }
 
 /**
@@ -58,6 +85,11 @@ export class MailService {
     @Inject(EMAIL_PROVIDER) private readonly provider: EmailProvider,
   ) {}
 
+  /**
+   * Invitación a un predicador invitado (pastor externo). Plantilla separada y de
+   * tono más formal que la convocatoria a la congregación (`enviarConvocatoriaEvento`):
+   * acá el destinatario es un par del equipo pastoral, no un asistente.
+   */
   async enviarInvitacionPredicador(params: InvitacionPredicadorParams): Promise<void> {
     const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:3000');
     const link = `${frontendUrl}/predicacion/${params.tokenConfirmacion}`;
@@ -67,8 +99,14 @@ export class MailService {
       month: 'long',
       year: 'numeric',
     });
+    const horaTexto = params.fecha.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
     const nombreIglesia = escapeHtml(params.nombreIglesia);
     const tituloEvento = escapeHtml(params.tituloEvento);
+    const saludo = params.nombrePredicador
+      ? `Estimado/a ${escapeHtml(params.nombrePredicador)}`
+      : 'Estimado/a hermano/a';
+    const ubicacion = params.ubicacion ? escapeHtml(params.ubicacion) : null;
+    const logoHtml = this.logoImgTag(params.logoUrl, nombreIglesia);
 
     try {
       await this.provider.sendMail({
@@ -76,14 +114,22 @@ export class MailService {
         subject: `Invitación a predicar — ${params.nombreIglesia}`,
         html: `
           <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
-            <h2 style="color: #0369a1;">${nombreIglesia}</h2>
-            <p>Has sido invitado a predicar en <strong>${tituloEvento}</strong>.</p>
-            <p>Fecha: ${fechaTexto}</p>
-            <p style="margin-top: 24px;">
-              <a href="${link}" style="background:#38bdf8;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
-                Responder invitación
+            ${logoHtml}
+            <h2 style="color: #0369a1;">Invitación a predicar</h2>
+            <p>${saludo}:</p>
+            <p>La iglesia <strong>${nombreIglesia}</strong> le invita a compartir la Palabra en <strong>${tituloEvento}</strong>.</p>
+            <table style="margin: 16px 0; font-size: 14px; color: #334155;">
+              <tr><td style="padding: 2px 12px 2px 0;">Fecha</td><td><strong>${fechaTexto}</strong></td></tr>
+              <tr><td style="padding: 2px 12px 2px 0;">Hora</td><td><strong>${horaTexto}</strong></td></tr>
+              ${ubicacion ? `<tr><td style="padding: 2px 12px 2px 0;">Lugar</td><td><strong>${ubicacion}</strong></td></tr>` : ''}
+            </table>
+            <p>Le agradeceríamos confirmar su disponibilidad:</p>
+            <p style="margin-top: 20px;">
+              <a href="${link}" style="background:#0369a1;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
+                Confirmar o rechazar la invitación
               </a>
             </p>
+            <p style="margin-top: 24px; font-size: 13px; color: #64748b;">Equipo pastoral — ${nombreIglesia}</p>
           </div>
         `,
       });
@@ -116,17 +162,13 @@ export class MailService {
     const firmante = params.nombreCreador
       ? escapeHtml(params.nombreCreador)
       : `el equipo pastoral de ${nombreIglesia}`;
+    const logoHtml = this.logoImgTag(params.logoUrl, nombreIglesia, backendUrl);
 
-    // logoUrl es la URL pública del bucket de Supabase Storage (absoluta). Se mantiene
-    // el fallback con BACKEND_URL por si queda algún logoUrl viejo con ruta relativa
-    // (formato previo a la migración a Storage) sin re-subir.
-    const logoSrc = params.logoUrl
-      ? params.logoUrl.startsWith('http')
-        ? params.logoUrl
-        : `${backendUrl}${params.logoUrl}`
-      : null;
-    const logoHtml = logoSrc
-      ? `<img src="${logoSrc}" alt="${nombreIglesia}" style="max-width:72px;max-height:72px;border-radius:8px;margin-bottom:12px;" />`
+    // Solo se menciona el/los predicador(es) invitado(s) que el equipo cargó con
+    // nombre; si el evento no tiene predicador, esta línea no aparece (pedido explícito).
+    const predicadores = params.predicadoresInvitados.map((n) => escapeHtml(n));
+    const predicadorHtml = predicadores.length
+      ? `<p style="margin-top: 4px;">Predica${predicadores.length > 1 ? 'n' : ''}: <strong>${unirNombres(predicadores)}</strong></p>`
       : '';
 
     try {
@@ -138,6 +180,7 @@ export class MailService {
             ${logoHtml}
             <h2 style="color: #0369a1;">${tituloEvento}</h2>
             ${descripcionEvento ? `<p>${descripcionEvento}</p>` : ''}
+            ${predicadorHtml}
             <p style="margin-top: 24px;">
               <a href="${linkConfirmar}" style="background:#22c55e;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;margin-right:8px;">
                 Sí, voy a asistir
@@ -219,5 +262,57 @@ export class MailService {
     } catch (error) {
       this.logger.error(`No se pudo enviar el aviso de facturación vencida a ${params.email}`, error);
     }
+  }
+
+  /**
+   * "Olvidé mi contraseña" desde el login (ver AuthService#requestPasswordReset).
+   * A diferencia del resto de MailService, acá SÍ se propaga el error: si el correo
+   * no sale, el usuario nunca recibe el enlace y la recuperación queda muerta —
+   * el endpoint igual responde 200 (no filtra si la cuenta existe), pero deja el
+   * fallo logueado para poder diagnosticarlo.
+   */
+  async enviarRecuperacionContrasena(params: RecuperacionContrasenaParams): Promise<void> {
+    const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    const link = `${frontendUrl}/recuperar-contrasena/${params.token}`;
+    const nombre = escapeHtml(params.nombre);
+
+    try {
+      await this.provider.sendMail({
+        to: params.email,
+        subject: 'Restablece tu contraseña — EvangelicApp',
+        html: `
+          <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
+            <h2 style="color: #0369a1;">Restablecer contraseña</h2>
+            <p>Hola ${nombre},</p>
+            <p>Recibimos una solicitud para restablecer la contraseña de tu cuenta en EvangelicApp. Hacé clic en el botón para elegir una nueva:</p>
+            <p style="margin-top: 20px;">
+              <a href="${link}" style="background:#0369a1;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
+                Restablecer mi contraseña
+              </a>
+            </p>
+            <p style="margin-top: 20px; font-size: 13px; color: #64748b;">
+              El enlace vence en ${params.expiraEnMinutos} minutos y sirve una sola vez.
+              Si no pediste esto, ignorá este correo — tu contraseña no cambia hasta que uses el enlace.
+            </p>
+          </div>
+        `,
+      });
+    } catch (error) {
+      this.logger.error(`No se pudo enviar el correo de recuperación a ${params.email}`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * `<img>` del logo de la iglesia para la cabecera de un correo. `logoUrl` es la URL
+   * pública del bucket de Storage (absoluta); `backendUrl` solo se usa como fallback
+   * para algún `logoUrl` viejo con ruta relativa (formato previo a Storage) sin re-subir.
+   */
+  private logoImgTag(logoUrl: string | null, altEscapado: string, backendUrl?: string): string {
+    if (!logoUrl) {
+      return '';
+    }
+    const src = logoUrl.startsWith('http') ? logoUrl : `${backendUrl ?? ''}${logoUrl}`;
+    return `<img src="${src}" alt="${altEscapado}" style="max-width:72px;max-height:72px;border-radius:8px;margin-bottom:12px;" />`;
   }
 }

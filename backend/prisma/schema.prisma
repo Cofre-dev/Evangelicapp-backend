@@ -220,6 +220,7 @@ model Usuario {
   notasCreadas          Nota[]                   @relation("NotaCreadaPor")
   notasAsignadas        Nota[]                   @relation("NotaAsignadaA")
   refreshTokens         RefreshToken[]
+  passwordResetTokens   PasswordResetToken[]
   matrimoniosCreados    Matrimonio[]             @relation("MatrimonioCreadoPor")
   bautizosCreados       Bautizo[]                @relation("BautizoCreadoPor")
   defuncionesCreadas    Defuncion[]              @relation("DefuncionCreadoPor")
@@ -274,6 +275,27 @@ model RefreshToken {
 
   @@index([usuarioId])
   @@map("refresh_tokens")
+}
+
+/// "Olvidé mi contraseña" desde el login. El token viaja en el link del email; acá solo
+/// se guarda su hash SHA-256, nunca el valor. De un solo uso (`usedAt`) y expiración
+/// corta (ver AuthService#requestPasswordReset). No pasa por Supabase Auth: al consumirse,
+/// AuthService actualiza el hash bcrypt local y sincroniza la contraseña a Supabase, igual
+/// que `changePassword`. Fase 8 (RLS): acceso solo bajo `runAsService` (rutas públicas sin
+/// identidad) — la policy la restringe al bypass privilegiado, como `refresh_tokens` pero
+/// esta sí con RLS activa.
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  usuarioId String
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@index([usuarioId])
+  @@map("password_reset_tokens")
 }
 
 /// Otorga a un usuario con rol USUARIO acceso a un módulo puntual (Agenda, Finanzas,

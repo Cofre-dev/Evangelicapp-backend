@@ -63,12 +63,13 @@ export class EventosService {
       },
     });
 
-    if (dto.tipo === TipoEvento.CULTO && dto.predicadores?.length) {
-      await this.invitarPredicadores(iglesiaId, evento, dto.predicadores);
-    }
+    const predicadoresInvitados =
+      dto.tipo === TipoEvento.CULTO && dto.predicadores?.length
+        ? await this.invitarPredicadores(iglesiaId, evento, dto.predicadores)
+        : [];
 
     if (dto.notificarIntegrantes) {
-      await this.notificarIntegrantes(iglesiaId, evento, usuarioId);
+      await this.notificarIntegrantes(iglesiaId, evento, usuarioId, predicadoresInvitados);
     }
 
     return this.findOne(iglesiaId, evento.id);
@@ -144,15 +145,23 @@ export class EventosService {
     }));
   }
 
+  /**
+   * Crea los `Predicador` del evento y les manda su invitación (plantilla propia,
+   * ver `MailService#enviarInvitacionPredicador`). Devuelve los nombres de los que
+   * el equipo cargó CON nombre — `notificarIntegrantes` los usa para decir en el
+   * correo a la congregación quién predica (los sin nombre no se listan).
+   */
   private async invitarPredicadores(
     iglesiaId: string,
-    evento: { id: string; titulo: string; fechaInicio: Date },
+    evento: { id: string; titulo: string; fechaInicio: Date; ubicacion: string | null },
     predicadores: { email: string; nombre?: string }[],
-  ) {
+  ): Promise<string[]> {
     const iglesia = await this.prisma.iglesia.findUnique({
       where: { id: iglesiaId },
-      select: { nombre: true },
+      select: { nombre: true, logoUrl: true },
     });
+
+    const nombresInvitados: string[] = [];
 
     for (const invitado of predicadores) {
       const predicador = await this.prisma.predicador.create({
@@ -164,14 +173,23 @@ export class EventosService {
         },
       });
 
+      if (predicador.nombre) {
+        nombresInvitados.push(predicador.nombre);
+      }
+
       await this.mailService.enviarInvitacionPredicador({
         email: predicador.email,
+        nombrePredicador: predicador.nombre,
         nombreIglesia: iglesia?.nombre ?? 'tu iglesia',
         tituloEvento: evento.titulo,
         fecha: evento.fechaInicio,
+        ubicacion: evento.ubicacion,
+        logoUrl: iglesia?.logoUrl ?? null,
         tokenConfirmacion: predicador.tokenConfirmacion,
       });
     }
+
+    return nombresInvitados;
   }
 
   /**
@@ -189,6 +207,7 @@ export class EventosService {
       ubicacion: string | null;
     },
     creadoPorId: string,
+    predicadoresInvitados: string[],
   ): Promise<void> {
     const integrantes = await this.prisma.integrante.findMany({
       where: { iglesiaId },
@@ -249,6 +268,7 @@ export class EventosService {
             nombreIglesia: iglesia?.nombre ?? 'tu iglesia',
             logoUrl: iglesia?.logoUrl ?? null,
             nombreCreador,
+            predicadoresInvitados,
             tokenConfirmacion: invitacion.tokenConfirmacion,
           }),
           this.whatsappService.enviarConvocatoriaEvento({

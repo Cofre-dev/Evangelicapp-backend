@@ -3,6 +3,8 @@ import { EstadoConfirmacionAsistencia } from '@prisma/client';
 import { runAsService } from '../../common/context/tenant-context';
 import { buildGoogleCalendarLink } from '../../common/utils/google-calendar-link';
 import { PrismaService } from '../../prisma/prisma.service';
+import { REALTIME_EVENTS } from '../realtime/realtime-rooms.util';
+import { RealtimeService } from '../realtime/realtime.service';
 
 /**
  * Fase 8 de docs/supabase.md (RLS): toda la clase es la ruta pública por token (ver
@@ -11,7 +13,10 @@ import { PrismaService } from '../../prisma/prisma.service';
  */
 @Injectable()
 export class AsistenciasService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtimeService: RealtimeService,
+  ) {}
 
   /** Público: lo que ve el integrante al abrir el link del email. */
   async getInvitacion(token: string) {
@@ -48,7 +53,13 @@ export class AsistenciasService {
   }
 
   private async responderComoServicio(token: string, respuesta: 'CONFIRMADO' | 'RECHAZADO') {
-    const asistencia = await this.prisma.asistenciaEvento.findUnique({ where: { tokenConfirmacion: token } });
+    const asistencia = await this.prisma.asistenciaEvento.findUnique({
+      where: { tokenConfirmacion: token },
+      include: {
+        evento: { select: { id: true, iglesiaId: true } },
+        integrante: { select: { id: true, nombreCompleto: true } },
+      },
+    });
 
     if (!asistencia) {
       throw new NotFoundException('Invitación no encontrada');
@@ -60,9 +71,20 @@ export class AsistenciasService {
       throw new BadRequestException('Esta invitación ya fue respondida');
     }
 
+    const respondidoAt = new Date();
     await this.prisma.asistenciaEvento.update({
       where: { tokenConfirmacion: token },
-      data: { estado: respuesta, respondidoAt: new Date() },
+      data: { estado: respuesta, respondidoAt },
+    });
+
+    // La pantalla de asistencias del evento (equipo de la iglesia) se entera en vivo
+    // de cada RSVP, sin refrescar — mismo patrón que predicador:respondio.
+    this.realtimeService.emitAIglesia(asistencia.evento.iglesiaId, REALTIME_EVENTS.ASISTENCIA_RESPONDIDA, {
+      eventoId: asistencia.evento.id,
+      integranteId: asistencia.integrante.id,
+      nombreCompleto: asistencia.integrante.nombreCompleto,
+      estado: respuesta,
+      respondidoAt,
     });
 
     return this.getInvitacion(token);

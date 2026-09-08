@@ -63,6 +63,12 @@ export class AppModule implements NestModule {
       .exclude(
         // Login: todavía no hay sesión/cookie que proteger.
         { path: 'auth/login', method: RequestMethod.POST },
+        // Recuperación de contraseña: rutas públicas sin sesión (el token del
+        // link del email es la autenticación). Si un usuario logueado abre la
+        // landing en el mismo navegador, su cookie no debe exigir el header CSRF
+        // que esa página nunca envía — mismo criterio que integrantes/registro.
+        { path: 'auth/forgot-password', method: RequestMethod.POST },
+        { path: 'auth/reset-password', method: RequestMethod.POST },
         // Confirmación pública de predicadores: el token de un solo uso es la propia
         // autenticación; no depende de cookies de sesión (ver PredicadoresController).
         { path: 'agenda/predicadores/:token/responder', method: RequestMethod.POST },

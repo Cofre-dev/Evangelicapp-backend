@@ -29,4 +29,6 @@ export const REALTIME_EVENTS = {
   IGLESIA_ACTUALIZADA: 'iglesia:actualizada',
   PREDICADOR_RESPONDIO: 'predicador:respondio',
   INTEGRANTE_REGISTRADO: 'integrante:registrado',
+  /** Un integrante convocado a un evento confirmó/rechazó su asistencia (RSVP por token). */
+  ASISTENCIA_RESPONDIDA: 'asistencia:respondida',
 } as const;
