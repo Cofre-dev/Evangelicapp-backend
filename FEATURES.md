@@ -1963,3 +1963,52 @@ haya conectividad directa; trabajo de frontend; y el PR de limpieza de socket.io
 **Funcionalidad:** deja staging listo a nivel de base de datos para que, apenas Render
 tenga el secret y el frontend migre, se pueda hacer el smoke test end-to-end de Realtime
 sin más pasos de infra.
+
+## [2026-09-08 13:15] Realtime: deploy a staging + smoke test end-to-end (PASA)
+
+El fundador configuró `SUPABASE_JWT_ACCESS_SECRET` (el de `Backend-staging`) en el Render
+de staging, desactivó "Allow public access" en Realtime de `Backend-staging`, y el
+frontend ya implementó `prompt.md`. Se commiteó y pusheó a `staging` (`3a26b1c4`) — hasta
+ahora todo el trabajo de Realtime estaba sin commitear y el backend desplegado seguía sin
+el endpoint (`GET /realtime/token` daba 404).
+
+**Cambios:** commit `3a26b1c4` (todo lo de las 2 entradas anteriores: broadcast service,
+token service+controller, fan-out, migración RLS, fix de prettier, docs). Push a
+`origin/staging` → auto-deploy del servicio Render `Evangelicapp-backend`
+(`srv-da700lq6iojc7380qmjg`, rama `staging`). Nota: ese servicio **no** corre
+`prisma migrate deploy` (buildCommand = `npm install && npx prisma generate && npm run
+build`), así que la migración `20260907131802` no chocaba — igual se insertó la fila de
+reconciliación en `_prisma_migrations` de `Backend-staging` por consistencia.
+
+**Smoke test end-to-end contra staging desplegado (backend Render + `Backend-staging`
+Supabase), con el usuario de prueba MANAGER:**
+- `GET /realtime/token` → `{ token, topic: "tenant:<iglesiaId>", expiresInSeconds: 1800 }`;
+  JWT HS256 con `role: authenticated`, `iglesia_id`, `is_superadmin: false`.
+- `supabase-js` con ese token → `SUBSCRIBED` al canal privado `tenant:<iglesiaId>` (la
+  policy RLS de `realtime.messages` lo autoriza).
+- Registro real por el QR público → `IntegrantesService#registrar` →
+  `RealtimeBroadcastService` (service_role) → **el cliente recibe `integrante:registrado`
+  con el payload correcto**.
+- **Negativo**: el mismo token intentando `tenant:<otra-iglesia>` → `CHANNEL_ERROR
+  "Unauthorized: You do not have permissions to read from this Channel topic"`.
+  Aislamiento multi-tenant confirmado también para Realtime.
+- Datos de prueba (2 integrantes) borrados al terminar.
+
+**Hallazgos:**
+- Primer intento de conexión falló con `MissingPartition: Realtime was unable to find the
+  expected messages partition` y funcionó al reintentar — el servicio de Realtime crea las
+  particiones diarias de `realtime.messages` on-demand y se auto-corrige. `pg_cron` no está
+  instalado en ninguno de los 2 proyectos; `Backend` (prod) tiene **0 particiones** hoy.
+  Documentado en `docs/realtime-migration.md` (Riesgos) — hay que vigilar que siempre haya
+  particiones hacia adelante.
+- El `client.channel(...).send({type:'broadcast'})` y el POST REST con anon key NO
+  entregan a canales privados (no hay policy de INSERT para `authenticated`/`anon`) — es
+  el comportamiento buscado: solo el backend con service_role emite.
+
+**Pendiente:** frontend termina de migrar los 4 consumidores y probar en el navegador;
+después aplicar la misma migración + config a `Backend`/Render de prod; después el PR de
+limpieza de socket.io. Ver `docs/realtime-migration.md`.
+
+**Funcionalidad:** confirma que la ruta completa nueva (endpoint de token → canal privado
+autorizado por RLS → broadcast del backend por REST) funciona de punta a punta en staging,
+incluido el aislamiento multi-tenant, antes de tocar el frontend en el navegador o prod.

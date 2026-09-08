@@ -129,20 +129,37 @@ Nada de socket.io se removió todavía.
       + `..._harden_tenant_claim`); el archivo Prisma
       `20260907131802_realtime_broadcast_authorization/migration.sql` ya tiene la
       versión endurecida en un solo `CREATE POLICY` — es lo que se aplica a `Backend`.
-- [ ] **Aplicar la migración a `Backend`** (`lkcgiqmgdefhxhckedga`, prod) por MCP —
-      después del smoke test en staging. Después
-      `prisma migrate resolve --applied 20260907131802_realtime_broadcast_authorization`
-      la próxima vez que alguien tenga conectividad directa.
-- [ ] En **Realtime > Settings** de cada proyecto (dashboard, no hay MCP para esto):
-      desactivar **"Allow public access"** para que solo se acepten canales privados.
-- [ ] **Env var en Render**: el fundador dejó el "Legacy JWT secret" del proyecto
-      `Backend` en `.env` como `SUPABASE_JWT_ACCESS_SECRET` y está reseteando Render
-      (2026-09-08). En staging, `SUPABASE_URL` debe apuntar al mismo proyecto cuya
-      anon key use el frontend de staging.
-- [ ] Smoke test end-to-end en staging: 2 sesiones de iglesias distintas + 1
-      SuperAdmin, disparar los 3 eventos, confirmar que **cada canal recibe solo
-      lo suyo** (mismo criterio que el QA de la Fase 5 / ronda 3 de QA de
-      staging).
+      También se insertó la fila de reconciliación en `_prisma_migrations` de
+      `Backend-staging` (equivale a `prisma migrate resolve --applied`), checksum
+      `5079323e...`.
+- [x] **"Allow public access" desactivado en `Backend-staging`** (dashboard, el
+      fundador, 2026-09-08). Falta hacerlo en `Backend` (prod).
+- [x] **Env var en Render staging**: `SUPABASE_JWT_ACCESS_SECRET` = "Legacy JWT
+      secret" de `Backend-staging` (el fundador, 2026-09-08). Confirmado que
+      `SUPABASE_URL` del servicio Render `Evangelicapp-backend`
+      (`srv-da700lq6iojc7380qmjg`, rama `staging`) apunta a `Backend-staging`
+      (los `logoUrl`/`fotoUrl` de la sesión salen de `woerftoeqarupnrggupl`).
+      Nota: ese servicio **no** corre `prisma migrate deploy` (buildCommand =
+      `npm install && npx prisma generate && npm run build`) — las migraciones a
+      staging se aplican a mano por MCP.
+- [x] **Smoke test end-to-end en staging — PASA (2026-09-08).**
+  - `GET /realtime/token` en el backend desplegado → `{ token, topic:
+    "tenant:<iglesiaId>", expiresInSeconds: 1800 }`; JWT con `role: authenticated`,
+    `iglesia_id`, `is_superadmin: false`, HS256.
+  - Cliente `supabase-js` con ese token → `SUBSCRIBED` al canal privado
+    `tenant:<iglesiaId>` (la RLS de `realtime.messages` lo deja pasar).
+  - Registro real por QR público → `IntegrantesService#registrar` →
+    `RealtimeBroadcastService` (service_role) → **el cliente recibe
+    `integrante:registrado` con el payload correcto**.
+  - Negativo: el mismo token intentando unirse a `tenant:<otro>` →
+    `CHANNEL_ERROR "Unauthorized: You do not have permissions to read from this
+    Channel topic"`. Aislamiento multi-tenant confirmado también para Realtime.
+  - `iglesia:actualizada` (topic `superadmin`) no se probó en vivo por falta de
+    sesión SuperAdmin, pero usa el mismo `publish()` y la rama `superadmin` de la
+    policy quedó cubierta por los 9 casos SQL.
+- [ ] **Aplicar la migración a `Backend`** (`lkcgiqmgdefhxhckedga`, prod) por MCP +
+      desactivar "Allow public access" ahí + `SUPABASE_JWT_ACCESS_SECRET` en el
+      Render de prod. Cuando el frontend de prod despliegue con Realtime.
 
 ### Frontend (ver `prompt.md`)
 
@@ -191,3 +208,16 @@ Nada de socket.io se removió todavía.
 - **Rollback**: `REALTIME_BROADCAST_ENABLED=false` en Render apaga el emit por
   Supabase sin redeploy. Mientras el frontend no haya migrado, socket.io sigue
   siendo el transporte real y esto no tiene efecto en usuarios.
+- **Particiones de `realtime.messages` (`MissingPartition`).** `realtime.messages`
+  está particionada por día (`RANGE (inserted_at)`). En el primer intento de
+  conexión en staging el join falló con `MissingPartition: Realtime was unable to
+  find the expected messages partition` y funcionó al reintentar — el servicio de
+  Realtime crea las particiones on-demand / al despertar y se auto-corrige.
+  `Backend-staging` tiene particiones 2026-09-07 → 2026-09-11; **`Backend` (prod)
+  tiene 0** al 2026-09-08 — se van a crear solas cuando Realtime se active ahí
+  (primera conexión tras aplicar la policy). `pg_cron` no está instalado en
+  ninguno de los dos, así que las particiones las mantiene el propio servicio de
+  Realtime, no un cron SQL — **vigilar que siempre haya unos días de particiones
+  hacia adelante**; si se agotan, los broadcasts fallan con `MissingPartition`
+  hasta que se creen (a mano: `create table realtime.messages_YYYY_MM_DD partition
+  of realtime.messages for values from ('YYYY-MM-DD') to ('YYYY-MM-DD'+1)`).
