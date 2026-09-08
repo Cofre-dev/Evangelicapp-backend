@@ -88,20 +88,24 @@ RealtimeService  ── emitAIglesia / emitASuperAdmin
 
 ### Topics
 
-| Topic | Quién recibe |
-|---|---|
-| `superadmin` | JWT con claim `is_superadmin = true` |
-| `tenant:{iglesiaId}` | JWT con claim `iglesia_id = {iglesiaId}` |
+| Topic | Quién recibe | Token de |
+|---|---|---|
+| `superadmin` | JWT con claim `is_superadmin = true` | `GET /realtime/token` (sesión) |
+| `tenant:{iglesiaId}` | JWT con claim `iglesia_id = {iglesiaId}` | `GET /realtime/token` (sesión) |
+| `convocatoria:{eventoId}` | JWT con claim `evento_id = {eventoId}` (sin `iglesia_id`) | `GET /agenda/convocatoria/:token/realtime` (público, `:token` = tokenConfirmacion del destinatario) |
 
-Cada usuario abre **un** canal (el que le devuelve `GET /realtime/token`) y
-escucha ahí los eventos que le interesan.
+Un usuario de sesión abre **un** canal (`tenant:` o `superadmin`). La página
+pública de estado de convocatoria (link del correo) abre `convocatoria:{eventoId}`
+con su propio token, sin cuenta.
 
 ### Policy RLS (`realtime.messages`)
 
-Ver `prisma/migrations/20260907131802_realtime_broadcast_authorization/migration.sql`.
-Solo `SELECT` para `authenticated`, comparando `realtime.topic()` contra los
-claims del JWT. Sin `INSERT` → los clientes no emiten. El backend emite por REST
-con `service_role`, exento de RLS.
+Dos policies permissive (se combinan con OR), solo `SELECT` para `authenticated`,
+sin `INSERT` (el backend emite por REST con `service_role`, exento de RLS):
+- `20260907131802_realtime_broadcast_authorization` — topics `superadmin` /
+  `tenant:{id}` contra los claims `is_superadmin` / `iglesia_id`.
+- `20260908204221_realtime_convocatoria_topic` — topic `convocatoria:{eventoId}`
+  contra el claim `evento_id` (que solo lleva el token público de convocatoria).
 
 ## Piezas del backend (ya implementadas — parallel-run)
 

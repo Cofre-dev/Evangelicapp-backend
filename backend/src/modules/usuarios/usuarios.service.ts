@@ -122,7 +122,13 @@ export class UsuariosService {
 
     return this.prisma.usuario.update({
       where: { id: usuarioId },
-      data: dto,
+      data: {
+        ...dto,
+        // Reactivar a alguien limpia también el bloqueo de login (ver
+        // AuthService#registrarLoginFallido): si un USUARIO llegó a los 5 intentos
+        // fallidos y quedó desactivado, el MANAGER lo reactiva y vuelve a entrar.
+        ...(dto.activo === true ? { failedLoginAttempts: 0, lockedUntil: null } : {}),
+      },
       select: USUARIO_SELECT,
     });
   }

@@ -67,6 +67,7 @@ corre `supabase-js` ni le habla a Supabase directamente, sigue hablando solo con
 - CSRF: patrón double-submit cookie vía `CsrfMiddleware` — toda request mutante (POST/PUT/PATCH/DELETE) que traiga una cookie de sesión debe reflejar su valor en el header `X-CSRF-Token`. Es 100% propio, no depende de quién emite el token de sesión.
 - `mustChangePassword` y `onboardingCompletado` en `Usuario` gatillan pantallas obligatorias en el frontend antes de dejar usar el resto de la app (ver `LoginResponse` en `auth.service.ts`).
 - Confirmación de contraseña para acciones sensibles (`ConfirmPasswordDto` — borrar ceremonias/movimientos, corregir fecha de facturación) responde `403 Forbidden` si la contraseña no coincide, nunca `401` — 401 se reserva para "tu sesión no es válida"; usar el mismo código para ambos casos hacía que algunos frontends interpretaran una contraseña de confirmación mal escrita como sesión inválida y cerraran sesión.
+- Bloqueo de login por cuenta (además del techo por IP de `ThrottlerGuard`): `Usuario.failedLoginAttempts`/`lockedUntil` — 3 fallos seguidos → bloqueo 10 min (`CuentaBloqueadaException`, 403 `code: CUENTA_BLOQUEADA` con `minutosRestantes`); 5 fallos → `activo = false` (reactivación por MANAGER/SuperAdmin). Un login OK, `changePassword` o `resetPassword` limpian el contador. El bloqueo revela que la cuenta existe (inherente) y es DoS-able (mitigado: se auto-cura y se saltea con recuperación de contraseña; solo la desactivación necesita admin).
 
 ### Roles y permisos
 
@@ -78,7 +79,7 @@ corre `supabase-js` ni le habla a Supabase directamente, sigue hablando solo con
 
 Autorización vía `JwtAuthGuard` + `RolesGuard` + `@Roles(...)` aplicados por controller. Los módulos delegables suman además `ModuloAccessGuard` + `@Modulo(...)`: MANAGER siempre tiene acceso completo (su acceso es por rol, no por lista), USUARIO solo si el MANAGER se lo otorgó. `Notas` es la excepción — no es un módulo delegable, es exclusivo de MANAGER salvo `GET mis-tareas` y `PATCH :id/marcar-hecha`, abiertos también a USUARIO sin necesitar un módulo otorgado.
 
-Rutas públicas (sin guard — el propio token de un solo uso en la URL/body es la autenticación, no hace falta cuenta en la plataforma): `agenda/predicadores/:token` (confirmación de predicadores por email), `agenda/asistencias/:token` (RSVP de integrantes a un evento), `integrantes/registro/:qrToken` (alta de un integrante vía el QR propio de la iglesia), y `auth/forgot-password` / `auth/reset-password` (recuperación de contraseña — `forgot-password` responde siempre 200 para no filtrar qué correos están registrados).
+Rutas públicas (sin guard — el propio token de un solo uso en la URL/body es la autenticación, no hace falta cuenta en la plataforma): `agenda/predicadores/:token` (confirmación de predicadores por email), `agenda/asistencias/:token` (RSVP de integrantes a un evento), `agenda/convocatoria/:token/*` (página de estado en vivo de la convocatoria de un evento — el `:token` es el `tokenConfirmacion` del propio destinatario, solo resuelve el evento, no expone emails), `integrantes/registro/:qrToken` (alta de un integrante vía el QR propio de la iglesia), y `auth/forgot-password` / `auth/reset-password` (recuperación de contraseña — `forgot-password` responde siempre 200 para no filtrar qué correos están registrados).
 
 ### Planes comerciales y facturación
 
@@ -101,7 +102,7 @@ No hay pasarela de pago todavía: el SuperAdmin confirma los pagos a mano (`POST
 | `super-admin` | `/superadmin/*` | Dashboard global (todas las iglesias, plan, estado, métricas por región) |
 | `iglesias` | `/iglesias/*` | Alta de tenant + manager (transaccional, exige plan y fecha de facturación); detalle, cambio de plan, corrección de facturación, marcar pagada y ocultar/mostrar, todo exclusivo de SuperAdmin |
 | `mi-iglesia` | `/mi-iglesia/*` | Datos propios de la iglesia (editar, logo) y módulo de facturación informativo (`/mi-iglesia/facturacion`), exclusivo del MANAGER |
-| `agenda` | `/agenda/eventos/*`, `/agenda/predicadores/*`, `/agenda/asistencias/*` | Calendario de la iglesia; invitación/confirmación de predicadores por email; RSVP masivo a integrantes |
+| `agenda` | `/agenda/eventos/*`, `/agenda/predicadores/*`, `/agenda/asistencias/*`, `/agenda/convocatoria/*` | Calendario de la iglesia; invitación/confirmación de predicadores por email; RSVP masivo a integrantes; página pública de estado en vivo de la convocatoria (predicadores + integrantes) accesible desde el link del correo |
 | `finanzas` | `/finanzas/movimientos/*`, `/finanzas/categorias/*`, `/finanzas/departamentos/*` | Ingresos/egresos, categorías y subdepartamentos propios por iglesia (subdepartamentos solo disponibles en plan Pro), dashboard, export a Excel, audit log |
 | `ceremonias` | `/ceremonias/matrimonios/*`, `/ceremonias/bautizos/*`, `/ceremonias/defunciones/*`, `/ceremonias/presentaciones/*` | Libro de ceremonias (folio correlativo por iglesia) + descarga del certificado en PDF |
 | `integrantes` | `/integrantes/*`, `/integrantes/registro/:qrToken` | Censo de congregantes vía QR propio de la iglesia; alta pública por QR, gestión desde el equipo |

@@ -79,13 +79,25 @@ export class AsistenciasService {
 
     // La pantalla de asistencias del evento (equipo de la iglesia) se entera en vivo
     // de cada RSVP, sin refrescar — mismo patrón que predicador:respondio.
-    this.realtimeService.emitAIglesia(asistencia.evento.iglesiaId, REALTIME_EVENTS.ASISTENCIA_RESPONDIDA, {
+    const payload = {
       eventoId: asistencia.evento.id,
       integranteId: asistencia.integrante.id,
       nombreCompleto: asistencia.integrante.nombreCompleto,
       estado: respuesta,
       respondidoAt,
-    });
+    };
+    this.realtimeService.emitAIglesia(
+      asistencia.evento.iglesiaId,
+      REALTIME_EVENTS.ASISTENCIA_RESPONDIDA,
+      payload,
+    );
+    // Y a la página pública de estado de la convocatoria (link del correo). El
+    // payload ya no trae email, así que sirve igual para ambos canales.
+    this.realtimeService.emitAConvocatoria(
+      asistencia.evento.id,
+      REALTIME_EVENTS.ASISTENCIA_RESPONDIDA,
+      payload,
+    );
 
     return this.getInvitacion(token);
   }

@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Rol } from '@prisma/client';
 import { SignJWT } from 'jose';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
-import { SUPERADMIN_TOPIC, tenantTopic } from './realtime-rooms.util';
+import { convocatoriaTopic, SUPERADMIN_TOPIC, tenantTopic } from './realtime-rooms.util';
 
 export interface RealtimeTokenResponse {
   /** JWT HS256 de vida corta, para `supabase.realtime.setAuth(token)` en el frontend. */
@@ -91,5 +91,28 @@ export class RealtimeTokenService {
       .sign(this.secret);
 
     return { token, topic, expiresInSeconds: this.ttlSeconds };
+  }
+
+  /**
+   * Token para la página PÚBLICA de estado de la convocatoria de un evento (se
+   * llega desde el link del correo, sin cuenta). El claim `evento_id` es lo que
+   * la policy RLS de `realtime.messages` usa para dejar suscribirse solo al topic
+   * `convocatoria:<eventoId>`. El llamador (`ConvocatoriaService`) ya resolvió el
+   * `eventoId` a partir del token de asistencia/predicador del destinatario.
+   */
+  async mintForConvocatoria(eventoId: string): Promise<RealtimeTokenResponse> {
+    if (!this.secret) {
+      throw new ServiceUnavailableException('Realtime no está configurado en este entorno');
+    }
+
+    const token = await new SignJWT({ role: 'authenticated', evento_id: eventoId })
+      .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+      .setSubject(`convocatoria:${eventoId}`)
+      .setAudience('authenticated')
+      .setIssuedAt()
+      .setExpirationTime(`${this.ttlSeconds}s`)
+      .sign(this.secret);
+
+    return { token, topic: convocatoriaTopic(eventoId), expiresInSeconds: this.ttlSeconds };
   }
 }

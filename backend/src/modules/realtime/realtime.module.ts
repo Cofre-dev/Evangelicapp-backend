@@ -15,6 +15,6 @@ import { RealtimeTokenService } from './realtime-token.service';
 @Module({
   controllers: [RealtimeTokenController],
   providers: [RealtimeGateway, RealtimeService, RealtimeBroadcastService, RealtimeTokenService],
-  exports: [RealtimeService],
+  exports: [RealtimeService, RealtimeTokenService],
 })
 export class RealtimeModule {}

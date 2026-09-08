@@ -196,6 +196,13 @@ model Usuario {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
+  /// Anti-fuerza-bruta del login (ver AuthService#validateUser). Cuenta intentos
+  /// fallidos consecutivos: a los 3 se bloquea el ingreso por 10 min (`lockedUntil`),
+  /// a los 5 se desactiva la cuenta (`activo = false`, reactivación manual). Un login
+  /// exitoso, `changePassword` o `resetPassword` lo dejan en 0.
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
+
   /// Última vez que se vio actividad real del usuario (login, heartbeat o refresh de
   /// sesión — ver AuthService). Denormalizado a propósito para que "usuarios activos"
   /// (SuperAdmin y dashboard de manager/usuario) sea un count() directo sin joinear

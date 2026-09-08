@@ -84,13 +84,23 @@ export class PredicadoresService {
       data: { estado: respuesta, respondidoAt },
     });
 
-    // Fase 5 de docs/supabase.md: la pantalla de evento del Pastor se entera en
-    // vivo, sin refrescar, de que un predicador confirmó/rechazó.
+    // La pantalla de evento del Pastor (equipo de la iglesia) se entera en vivo,
+    // sin refrescar. Payload interno: incluye el email del predicador.
     this.realtimeService.emitAIglesia(predicador.evento.iglesiaId, REALTIME_EVENTS.PREDICADOR_RESPONDIO, {
       eventoId: predicador.eventoId,
       predicadorId: predicador.id,
       nombre: predicador.nombre,
       email: predicador.email,
+      estado: respuesta,
+      respondidoAt,
+    });
+
+    // Página pública de estado de la convocatoria (link del correo). Sin email:
+    // ahí lo ve cualquiera que tenga el link de ese evento.
+    this.realtimeService.emitAConvocatoria(predicador.eventoId, REALTIME_EVENTS.PREDICADOR_RESPONDIO, {
+      eventoId: predicador.eventoId,
+      predicadorId: predicador.id,
+      nombre: predicador.nombre,
       estado: respuesta,
       respondidoAt,
     });

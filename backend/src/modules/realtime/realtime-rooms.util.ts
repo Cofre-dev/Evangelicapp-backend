@@ -25,6 +25,18 @@ export function tenantTopic(iglesiaId: string): string {
   return `tenant:${iglesiaId}`;
 }
 
+/**
+ * Topic de Supabase Broadcast para el estado en vivo de la convocatoria de UN
+ * evento (predicadores + integrantes). Lo abre gente sin cuenta desde el link
+ * del correo de invitación — la autoriza un token de Realtime de vida corta con
+ * claim `evento_id` (ver RealtimeTokenService#mintForConvocatoria y la policy
+ * RLS `..._realtime_convocatoria_topic`). Solo Supabase Broadcast, nunca
+ * socket.io (ese gateway requiere una sesión).
+ */
+export function convocatoriaTopic(eventoId: string): string {
+  return `convocatoria:${eventoId}`;
+}
+
 export const REALTIME_EVENTS = {
   IGLESIA_ACTUALIZADA: 'iglesia:actualizada',
   PREDICADOR_RESPONDIO: 'predicador:respondio',

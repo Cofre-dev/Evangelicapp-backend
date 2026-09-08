@@ -1,7 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Server } from 'socket.io';
 import { RealtimeBroadcastService } from './realtime-broadcast.service';
-import { iglesiaRoom, SUPERADMIN_ROOM, SUPERADMIN_TOPIC, tenantTopic } from './realtime-rooms.util';
+import {
+  convocatoriaTopic,
+  iglesiaRoom,
+  SUPERADMIN_ROOM,
+  SUPERADMIN_TOPIC,
+  tenantTopic,
+} from './realtime-rooms.util';
 
 /**
  * Fachada única que usan las services de negocio (IglesiasService,
@@ -35,6 +41,15 @@ export class RealtimeService {
   emitASuperAdmin(evento: string, payload: unknown): void {
     this.emitSocketIo(SUPERADMIN_ROOM, evento, payload);
     void this.broadcast.publish(SUPERADMIN_TOPIC, evento, payload);
+  }
+
+  /**
+   * Estado en vivo de la convocatoria de un evento (predicadores + integrantes),
+   * para la página pública a la que se llega desde el link del correo. Solo
+   * Supabase Broadcast: ese canal lo abre gente sin sesión, socket.io no aplica.
+   */
+  emitAConvocatoria(eventoId: string, evento: string, payload: unknown): void {
+    void this.broadcast.publish(convocatoriaTopic(eventoId), evento, payload);
   }
 
   private emitSocketIo(room: string, evento: string, payload: unknown): void {

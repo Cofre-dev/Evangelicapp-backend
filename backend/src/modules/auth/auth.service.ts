@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
   Injectable,
   Logger,
   UnauthorizedException,
@@ -10,6 +11,7 @@ import * as bcrypt from 'bcrypt';
 import { createHash, randomUUID } from 'crypto';
 import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
 import { runAsService, updateTenantContext } from '../../common/context/tenant-context';
+import { CuentaBloqueadaException } from '../../common/exceptions/cuenta-bloqueada.exception';
 import { IglesiaSuspendidaException } from '../../common/exceptions/iglesia-suspendida.exception';
 import { calcularEstadoFacturacion } from '../../common/utils/calcular-facturacion';
 import { generateCsrfToken } from '../../common/utils/generate-csrf-token';
@@ -57,6 +59,11 @@ export interface ValidatedLogin {
 /** Vida del link de "olvidé mi contraseña" (ver requestPasswordReset). */
 const PASSWORD_RESET_TTL_MINUTES = 60;
 
+/** Anti-fuerza-bruta del login (ver validateUser). */
+const LOGIN_LOCK_AFTER_ATTEMPTS = 3; // a los 3 fallos seguidos: bloqueo temporal
+const LOGIN_LOCK_MINUTES = 10;
+const LOGIN_DEACTIVATE_AFTER_ATTEMPTS = 5; // a los 5: se desactiva la cuenta
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -103,12 +110,20 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales inválidas');
     }
 
+    // Anti-fuerza-bruta: si la cuenta está bloqueada, ni siquiera se prueba la
+    // contraseña. Un bloqueo activo revela que la cuenta existe — inherente al
+    // mecanismo, no una fuga extra (quien puede bloquearla ya lo sabe).
+    if (usuario.lockedUntil && usuario.lockedUntil.getTime() > Date.now()) {
+      const minutosRestantes = Math.max(1, Math.ceil((usuario.lockedUntil.getTime() - Date.now()) / 60_000));
+      throw new CuentaBloqueadaException(minutosRestantes);
+    }
+
     let session = await this.trySupabaseSignIn(email, password);
 
     if (!session) {
       const passwordMatches = await bcrypt.compare(password, usuario.password);
       if (!passwordMatches) {
-        throw new UnauthorizedException('Credenciales inválidas');
+        throw await this.registrarLoginFallido(usuario);
       }
 
       if (usuario.supabaseUserId) {
@@ -154,6 +169,15 @@ export class AuthService {
       session = sessionReautenticada;
     }
 
+    // Contraseña confirmada válida: se limpia el contador de intentos fallidos
+    // (aunque la iglesia esté en mora — eso no es culpa de la credencial).
+    if (usuario.failedLoginAttempts > 0 || usuario.lockedUntil) {
+      await this.prisma.usuario.update({
+        where: { id: usuario.id },
+        data: { failedLoginAttempts: 0, lockedUntil: null },
+      });
+    }
+
     if (usuario.iglesia?.estado === EstadoIglesia.SUSPENDIDA) {
       const { diasEnMora } = calcularEstadoFacturacion(usuario.iglesia.proximaFacturacion);
       throw new IglesiaSuspendidaException(diasEnMora);
@@ -161,6 +185,48 @@ export class AuthService {
 
     const { iglesia, ...usuarioSinIglesia } = usuario;
     return { usuario: usuarioSinIglesia, session };
+  }
+
+  /**
+   * Intento de login con contraseña incorrecta contra una cuenta que SÍ existe.
+   * Sube el contador y devuelve (no lanza — para `throw await ...`) la excepción:
+   * a los 3 fallos seguidos, bloqueo de 10 min; a los 5, se desactiva la cuenta
+   * (reactivación manual por el MANAGER/SuperAdmin). Un login exitoso,
+   * `changePassword` o `resetPassword` dejan el contador en 0.
+   */
+  private async registrarLoginFallido(usuario: {
+    id: string;
+    failedLoginAttempts: number;
+  }): Promise<HttpException> {
+    const intentos = usuario.failedLoginAttempts + 1;
+
+    if (intentos >= LOGIN_DEACTIVATE_AFTER_ATTEMPTS) {
+      await this.prisma.usuario.update({
+        where: { id: usuario.id },
+        data: { failedLoginAttempts: intentos, lockedUntil: null, activo: false },
+      });
+      this.logger.warn(`Cuenta ${usuario.id} desactivada tras ${intentos} intentos de login fallidos`);
+      // Genérico a propósito: en el 5º intento el llamador ya es casi seguro un
+      // atacante; que un legítimo llegue acá implica haber ignorado el aviso del 3º.
+      return new UnauthorizedException('Credenciales inválidas');
+    }
+
+    if (intentos >= LOGIN_LOCK_AFTER_ATTEMPTS) {
+      await this.prisma.usuario.update({
+        where: { id: usuario.id },
+        data: {
+          failedLoginAttempts: intentos,
+          lockedUntil: new Date(Date.now() + LOGIN_LOCK_MINUTES * 60_000),
+        },
+      });
+      return new CuentaBloqueadaException(LOGIN_LOCK_MINUTES);
+    }
+
+    await this.prisma.usuario.update({
+      where: { id: usuario.id },
+      data: { failedLoginAttempts: intentos },
+    });
+    return new UnauthorizedException('Credenciales inválidas');
   }
 
   /**
@@ -349,7 +415,12 @@ export class AuthService {
 
     await this.prisma.usuario.update({
       where: { id: usuarioId },
-      data: { password: newPasswordHash, mustChangePassword: false },
+      data: {
+        password: newPasswordHash,
+        mustChangePassword: false,
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+      },
     });
 
     if (usuario.supabaseUserId) {
@@ -439,7 +510,12 @@ export class AuthService {
     await this.prisma.withTenantTransaction(async (tx) => {
       await tx.usuario.update({
         where: { id: usuario.id },
-        data: { password: passwordHash, mustChangePassword: false },
+        data: {
+          password: passwordHash,
+          mustChangePassword: false,
+          failedLoginAttempts: 0,
+          lockedUntil: null,
+        },
       });
       await tx.passwordResetToken.update({ where: { id: registro.id }, data: { usedAt: ahora } });
       await tx.sesionActividad.updateMany({

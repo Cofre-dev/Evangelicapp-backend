@@ -2171,3 +2171,64 @@ hacerlo.
 
 **Funcionalidad:** deja claro que el 403 masivo NO es una regresión del backend (para que la
 próxima sesión no lo persiga ahí) y entrega el fix accionable al frontend.
+
+## [2026-09-08 20:50] Agenda: estado de convocatoria (in-app + página pública por link del correo) + rate limit de login por cuenta
+
+Tres pedidos del fundador.
+
+**1 + 2 — Estado de la convocatoria de un evento (predicadores + integrantes), en vivo.**
+
+- **In-app** (`GET /agenda/eventos/:id/convocatoria`, autenticado, módulo AGENDA):
+  `EventosService#findConvocatoria` devuelve `{ predicadores, asistencias }` en una sola
+  llamada. El frontend unifica el diálogo "Ver asistencia" para mostrar los dos.
+- **Página pública** — se llega desde un link discreto en los correos de invitación
+  (predicador y convocatoria a la congregación). Nuevo `ConvocatoriaController` +
+  `ConvocatoriaService` en `agenda`:
+  - `GET /agenda/convocatoria/:token/estado` — público, throttle 60/min. `:token` es el
+    `tokenConfirmacion` del propio destinatario (asistencia O predicador); solo se usa para
+    resolver el evento, no se consume. Devuelve evento + predicadores + integrantes con su
+    estado. **Sin emails** (lo ve toda la congregación + los predicadores).
+  - `GET /agenda/convocatoria/:token/realtime` — público. `RealtimeTokenService#mintForConvocatoria`
+    firma un JWT HS256 corto con claim `evento_id` (sin `iglesia_id`), topic
+    `convocatoria:<eventoId>`. 503 si no hay secret configurado.
+- **Realtime**: `RealtimeService#emitAConvocatoria(eventoId, ...)` (solo Supabase Broadcast,
+  el canal lo abre gente sin sesión). `PredicadoresService#responder` y
+  `AsistenciasService#responder` ahora emiten a los DOS topics: `tenant:<iglesiaId>` (payload
+  interno, con email del predicador) y `convocatoria:<eventoId>` (payload sin email).
+- **Migración `20260908204221_realtime_convocatoria_topic`**: policy RLS aparte sobre
+  `realtime.messages` (permissive → OR con la del tenant) — un token con claim `evento_id`
+  solo puede suscribirse a `convocatoria:<eseEventoId>`. Probada con 4 casos simulados.
+  Aplicada a `Backend-staging` por MCP + reconciliada en `_prisma_migrations`.
+- `realtime.module.ts` ahora exporta `RealtimeTokenService`; `agenda.module.ts` ya importaba
+  `RealtimeModule`.
+- **Correos** (`MailService`): helper `verEstadoConvocatoriaHtml(token)` — link de texto
+  discreto ("Ver quién más confirmó su asistencia") a `/agenda/convocatoria/<token>`, agregado
+  al correo del predicador y al de la congregación.
+
+**3 — Rate limit / bloqueo de login por cuenta.**
+
+- Schema: `Usuario.failedLoginAttempts Int @default(0)` + `Usuario.lockedUntil DateTime?`.
+  Migración `20260908203618_add_login_lockout` (2 columnas). Aplicada a `Backend-staging`.
+- `AuthService#validateUser`: si `lockedUntil` está vigente → `CuentaBloqueadaException`
+  (403, `code: "CUENTA_BLOQUEADA"`, `minutosRestantes`) sin siquiera probar la contraseña.
+  Contraseña incorrecta contra cuenta existente → `registrarLoginFallido`: sube el contador,
+  a los **3** fallos bloquea **10 min**, a los **5** desactiva la cuenta (`activo = false`,
+  reactivación manual). Login exitoso / `changePassword` / `resetPassword` → contador a 0.
+  `UsuariosService#update` también lo limpia al reactivar (`activo: true`).
+- `CuentaBloqueadaException` nueva en `common/exceptions/`.
+- Trade-offs documentados: el bloqueo revela que la cuenta existe (inherente al mecanismo);
+  el account lockout es DoS-able (mitigado: el bloqueo de 10 min se auto-cura y se saltea con
+  recuperación de contraseña; solo la desactivación a los 5 necesita admin).
+
+**Verificado:** `npm run build`, `npm run lint:ci`, `npm test` (18/18) limpios. Policy RLS
+de convocatoria probada a nivel SQL. **No probado end-to-end contra staging todavía** (el
+deploy sale con este commit).
+
+**Pendiente:** trabajo de frontend (`prompt.md`: diálogo unificado in-app, página pública
+`/agenda/convocatoria/[token]` con su propio cliente Supabase, UX de `CUENTA_BLOQUEADA` en el
+login); aplicar `20260908203618` + `20260908204221` a `Backend` si se corre local; smoke
+test.
+
+**Funcionalidad:** el equipo y —vía el link del correo— los predicadores y la congregación
+pueden ver en vivo quién confirmó o rechazó una invitación, sin cuenta; y el login queda con
+freno anti-fuerza-bruta por cuenta además del techo por IP que ya existía.

@@ -146,6 +146,47 @@ export class EventosService {
   }
 
   /**
+   * Estado completo de la convocatoria del evento para el equipo de la iglesia:
+   * predicadores invitados + integrantes convocados, con su confirmación/rechazo.
+   * Vista in-app (una sola llamada); la página pública equivalente es
+   * `GET /agenda/convocatoria/:token/estado` (ver ConvocatoriaService). El
+   * frontend la mantiene en vivo con los eventos `predicador:respondio` /
+   * `asistencia:respondida` del canal de Realtime de la iglesia.
+   */
+  async findConvocatoria(iglesiaId: string, id: string) {
+    await this.findOne(iglesiaId, id);
+
+    const [predicadores, asistencias] = await Promise.all([
+      this.prisma.predicador.findMany({
+        where: { eventoId: id },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, nombre: true, email: true, estado: true, respondidoAt: true },
+      }),
+      this.prisma.asistenciaEvento.findMany({
+        where: { eventoId: id },
+        orderBy: { integrante: { nombreCompleto: 'asc' } },
+        select: {
+          integranteId: true,
+          estado: true,
+          respondidoAt: true,
+          integrante: { select: { nombreCompleto: true, email: true } },
+        },
+      }),
+    ]);
+
+    return {
+      predicadores,
+      asistencias: asistencias.map((a) => ({
+        integranteId: a.integranteId,
+        nombreCompleto: a.integrante.nombreCompleto,
+        email: a.integrante.email,
+        estado: a.estado,
+        respondidoAt: a.respondidoAt,
+      })),
+    };
+  }
+
+  /**
    * Crea los `Predicador` del evento y les manda su invitación (plantilla propia,
    * ver `MailService#enviarInvitacionPredicador`). Devuelve los nombres de los que
    * el equipo cargó CON nombre — `notificarIntegrantes` los usa para decir en el

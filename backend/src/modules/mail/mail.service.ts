@@ -107,6 +107,7 @@ export class MailService {
       : 'Estimado/a hermano/a';
     const ubicacion = params.ubicacion ? escapeHtml(params.ubicacion) : null;
     const logoHtml = this.logoImgTag(params.logoUrl, nombreIglesia);
+    const estadoHtml = this.verEstadoConvocatoriaHtml(params.tokenConfirmacion);
 
     try {
       await this.provider.sendMail({
@@ -129,6 +130,7 @@ export class MailService {
                 Confirmar o rechazar la invitación
               </a>
             </p>
+            ${estadoHtml}
             <p style="margin-top: 24px; font-size: 13px; color: #64748b;">Equipo pastoral — ${nombreIglesia}</p>
           </div>
         `,
@@ -170,6 +172,7 @@ export class MailService {
     const predicadorHtml = predicadores.length
       ? `<p style="margin-top: 4px;">Predica${predicadores.length > 1 ? 'n' : ''}: <strong>${unirNombres(predicadores)}</strong></p>`
       : '';
+    const estadoHtml = this.verEstadoConvocatoriaHtml(params.tokenConfirmacion);
 
     try {
       await this.provider.sendMail({
@@ -189,6 +192,7 @@ export class MailService {
                 No podré asistir
               </a>
             </p>
+            ${estadoHtml}
             <p style="margin-top: 24px; font-size: 13px; color: #64748b;">${firmante} — ${nombreIglesia}</p>
           </div>
         `,
@@ -314,5 +318,20 @@ export class MailService {
     }
     const src = logoUrl.startsWith('http') ? logoUrl : `${backendUrl ?? ''}${logoUrl}`;
     return `<img src="${src}" alt="${altEscapado}" style="max-width:72px;max-height:72px;border-radius:8px;margin-bottom:12px;" />`;
+  }
+
+  /**
+   * Link discreto (texto, no botón) a la página pública de estado de la
+   * convocatoria — quién confirmó / rechazó, en vivo. Va tanto en el correo al
+   * predicador como en la convocatoria a la congregación; `token` es el
+   * `tokenConfirmacion` del propio destinatario (ver ConvocatoriaService).
+   */
+  private verEstadoConvocatoriaHtml(token: string): string {
+    const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    return `<p style="margin-top: 16px; font-size: 13px;">
+      <a href="${frontendUrl}/agenda/convocatoria/${token}" style="color:#64748b;text-decoration:underline;">
+        Ver quién más confirmó su asistencia
+      </a>
+    </p>`;
   }
 }

@@ -52,6 +52,12 @@ export class EventosController {
     return this.eventosService.findAsistencias(this.requireIglesiaId(user), id);
   }
 
+  /** Estado completo de la convocatoria: predicadores invitados + integrantes convocados. */
+  @Get(':id/convocatoria')
+  findConvocatoria(@CurrentUser() user: JwtPayload, @Param('id') id: string) {
+    return this.eventosService.findConvocatoria(this.requireIglesiaId(user), id);
+  }
+
   @Post()
   create(@CurrentUser() user: JwtPayload, @Body() dto: CreateEventoDto) {
     return this.eventosService.create(this.requireIglesiaId(user), user.sub, dto);
