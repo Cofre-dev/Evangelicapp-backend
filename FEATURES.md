@@ -2232,3 +2232,20 @@ test.
 **Funcionalidad:** el equipo y —vía el link del correo— los predicadores y la congregación
 pueden ver en vivo quién confirmó o rechazó una invitación, sin cuenta; y el login queda con
 freno anti-fuerza-bruta por cuenta además del techo por IP que ya existía.
+
+**Actualización (2026-09-09 ~01:00) — smoke test contra staging desplegado (PASA):**
+- **Convocatoria pública**: `GET /agenda/convocatoria/:token/estado` con token de asistencia
+  y de predicador → ambos resuelven el mismo evento; respuesta con predicadores + integrantes
+  y **sin emails**. `GET /agenda/convocatoria/:token/realtime` → JWT con claims
+  `{ role: authenticated, evento_id }`, topic `convocatoria:<id>`, 1800s.
+- **Realtime de convocatoria**: cliente `supabase-js` con el token → `SUBSCRIBED` al canal
+  `convocatoria:<id>`; responder una asistencia y un predicador → **los dos broadcasts
+  llegan** (`asistencia:respondida`, `predicador:respondio`), el de predicador **sin email**.
+- **In-app** `GET /agenda/eventos/:id/convocatoria` (autenticado) → predicadores + integrantes
+  **con** email.
+- **Bloqueo de login** (probado en la cuenta de seed `tesorero@demo.cl`): 2 fallos → 401
+  genérico; 3º → 403 `CUENTA_BLOQUEADA` (minutosRestantes 10); 4º durante el lock → sigue
+  bloqueado sin subir el contador; tras limpiar el lock, 4º y 5º fallo → 5º **desactiva la
+  cuenta** (`activo=false`), y desde ahí vuelve a 401 genérico. Un login correcto en la
+  cuenta del fundador tras 1 fallo → contador de nuevo en 0. `tesorero@demo.cl` restaurado
+  (`activo=true`, contador 0). Datos de prueba borrados.
