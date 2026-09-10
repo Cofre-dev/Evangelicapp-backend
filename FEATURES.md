@@ -2356,3 +2356,40 @@ pre-existente; el commit de docs solo fue el primer redeploy que lo expuso. Prod
   (token basura) → 404 — los tres exponen queries bajo `runAsService`/RLS y responden bien.
   `pastor@demo.cl` quedó con `failedLoginAttempts` en 0 (se reseteó el intento de prueba).
 - `README.md` "Base de datos": documenta que el modo transacción es obligatorio y por qué.
+
+**Actualización (2026-09-09 ~23:30) — hotfix de seguridad: `_prisma_migrations` y `refresh_tokens`
+escribibles por `anon` en producción.** El Advisor Center de Supabase marcaba
+`rls_disabled_in_public` en **nivel ERROR** sobre esas 2 tablas de `Backend-staging`. Al
+revisar los grants: el rol **`anon`** (cuya API key viaja en el bundle del frontend) tenía
+`SELECT/INSERT/UPDATE/DELETE/TRUNCATE` sobre ambas vía PostgREST (`/rest/v1/`). Vector real:
+alguien con esa key podía **vaciar `_prisma_migrations`** y romper el tracking de migraciones
+(denial-of-deploy), o inyectar filas en `refresh_tokens`. Las 18 tablas de negocio ya estaban
+cubiertas por RLS `FORCE` + `tenant_isolation`; estas 2 se colaron (ninguna migración las
+tocaba). `refresh_tokens` tiene 0 filas (muerta desde Fase 7).
+
+- **Fix** (`20260909223000_lockdown_internal_public_tables`, aplicado a `Backend-staging` por
+  MCP): `ENABLE ROW LEVEL SECURITY` sin policy en ambas + `REVOKE ALL FROM anon, authenticated`
+  + `ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public REVOKE ALL ON TABLES FROM anon,
+  authenticated` (defensa en profundidad — las próximas tablas de Prisma no nacen expuestas).
+  `postgres` (owner/BYPASSRLS) y `app_runtime` (conserva su default privilege `arwd`) intactos
+  → ni `prisma migrate` ni la API se ven afectados.
+- **Verificado:** el advisor de seguridad pasó de `rls_disabled_in_public` (ERROR) a
+  `rls_enabled_no_policy` (INFO, estado aceptable — igual que el proyecto `Backend`).
+  `POST /auth/login` y `/auth/forgot-password` siguen respondiendo bien post-fix.
+- **Pendiente:** `prisma migrate resolve --applied 20260909223000_lockdown_internal_public_tables`
+  cuando alguien tenga conectividad directa. El DROP definitivo de `refresh_tokens` (tabla +
+  modelo en `schema.prisma`) sigue como tarea aparte.
+
+**Resto del Advisor Center (revisado, no crítico):**
+- **Seguridad `Backend-staging`:** solo queda `auth_leaked_password_protection` (WARN) — activar
+  el chequeo contra HaveIBeenPwned en Authentication → Policies del dashboard (no hay tool MCP
+  para config de Auth; lo hace el fundador).
+- **Seguridad `Backend`** (en retiro): `rls_enabled_no_policy` (INFO ×2, ok) + `rls_auto_enable()`
+  es `SECURITY DEFINER` ejecutable por `anon`/`authenticated` (WARN ×2). Esa función **no existe**
+  en `Backend-staging` — es residuo de una sesión vieja solo en `Backend`. Se va con el proyecto.
+- **Performance `Backend-staging`:** `auth_rls_initplan` (WARN ×2) — las 2 policies de
+  `realtime.messages` re-evalúan `current_setting()` por fila; envolver en `(select …)` (las
+  policies de `public` ya lo hacen bien). `unindexed_foreign_keys` (INFO ×16, FKs `creadoPorId`/
+  etc. sin índice de cobertura) y `unused_index` (INFO ×12 — índices sin uso *porque la base casi
+  no tiene tráfico todavía*, no tocar). Todo esto: seguimiento a futuro, no bloquea nada. El fix
+  de las policies de realtime conviene juntarlo con el guard de schema pendiente para dev local.
