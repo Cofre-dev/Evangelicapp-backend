@@ -2331,3 +2331,28 @@ desactualizado da confianza falsa).
 - **Pendiente del fundador:** apuntar `DATABASE_URL` local a Docker; avisar para pausar `Backend`
   (reversible; se elimina en 1-2 semanas si no se lo extraña); renombrar `Backend-staging` en el
   dashboard (ref/connection no cambia).
+
+**Actualización (2026-09-09 ~22:45) — deploys rotos por agotamiento del pool de conexiones, y fix
+a modo transacción.** El push de docs de arriba disparó un redeploy que **falló**:
+`PrismaClientInitializationError: FATAL: (EMAXCONNSESSION) max clients reached in session mode -
+pool_size: 15`. El `DATABASE_URL` de Render conectaba al pooler de Supabase en **modo sesión**
+(puerto `5432`, tope 15 conexiones dedicadas). En cada deploy Render arranca la instancia nueva
+antes de matar la vieja → la vieja ya tenía las 15/15 tomadas (confirmado en `pg_stat_activity`)
+→ la nueva no consigue conexión → crashea al `onModuleInit` → deploy falla. Problema
+pre-existente; el commit de docs solo fue el primer redeploy que lo expuso. Producción no se cayó
+(Render mantiene el último deploy bueno, `bc3906ae`).
+
+- **Fix:** `DATABASE_URL` en Render → **modo transacción** (puerto `6543`,
+  `?pgbouncer=true&connection_limit=10`), mismo host/rol/credencial. El pooler multiplexa: una
+  conexión de cliente ya no reserva un backend de Postgres dedicado. El `set_config('app.…', v,
+  true)` del RLS es transaction-local y corre como primer statement dentro del mismo
+  `raw.$transaction([...])` que la query, así que es 100% compatible con modo transacción (igual
+  `withTenantTransaction`, que abre una transacción interactiva). DDL (`prisma migrate deploy`) NO
+  pasa por el pooler de transacción — sigue usando la conexión `postgres` directa en `5432`, sin
+  cambio (y el build de Render no corre migraciones de todos modos).
+- **Verificado post-deploy:** deploy `live`; `app_runtime` pasó de 15/15 conexiones a 2;
+  `POST /auth/login` (credencial incorrecta) → 401 correcto (no 500 — el path a `usuarios` corre),
+  `POST /auth/forgot-password` (email inexistente) → 200, `GET /agenda/convocatoria/:token/estado`
+  (token basura) → 404 — los tres exponen queries bajo `runAsService`/RLS y responden bien.
+  `pastor@demo.cl` quedó con `failedLoginAttempts` en 0 (se reseteó el intento de prueba).
+- `README.md` "Base de datos": documenta que el modo transacción es obligatorio y por qué.

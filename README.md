@@ -125,11 +125,16 @@ El proveedor de base de datos es **Supabase** (Postgres gestionado). Hay dos pro
 
 - **Producción** — proyecto Supabase `Backend-staging` (ref `woerftoeqarupnrggupl`). Es la base
   del backend en línea (`evangelicapp-backend.onrender.com`, auto-deploy desde la rama `staging`).
-  El backend **conecta como el rol `app_runtime` (sin `BYPASSRLS`), así que las policies de RLS
-  se aplican de verdad** — ver "RLS / aislamiento multi-tenant" abajo. Las migraciones se aplican
-  a mano (MCP de Supabase o `prisma migrate deploy` con una conexión `postgres` elevada); el build
-  de Render **no** corre `migrate deploy`. El nombre "staging" es histórico (ver `FEATURES.md`
-  2026-08-25); hoy es el entorno de producción.
+  El `DATABASE_URL` de Render **conecta como el rol `app_runtime` (sin `BYPASSRLS`, así que las
+  policies de RLS se aplican de verdad — ver "RLS / aislamiento multi-tenant" abajo) contra el
+  pooler de Supabase en modo transacción (puerto `6543`, `?pgbouncer=true`)**. El modo transacción
+  es obligatorio: en modo sesión (`5432`) el tope de 15 conexiones se agota en cada deploy por el
+  solape instancia vieja/nueva y el deploy falla (ver `FEATURES.md` 2026-09-09). El
+  `set_config(...,true)` de RLS es transaction-local, compatible con este modo. Las migraciones se
+  aplican a mano (MCP de Supabase o `prisma migrate deploy` con una conexión `postgres` directa en
+  `5432` — DDL no pasa por el pooler de transacción); el build de Render **no** corre
+  `migrate deploy`. El nombre "staging" es histórico (ver `FEATURES.md` 2026-08-25); hoy es el
+  entorno de producción.
 - **`Backend`** (ref `lkcgiqmgdefhxhckedga`) — **en retiro** (decisión 2026-09-09). Tenía los datos
   de prueba de agosto del equipo fundador; se guardó un snapshot antes de retirarlo. Se pausa y,
   si no se lo extraña, se elimina. Ya no es la base de nada.
