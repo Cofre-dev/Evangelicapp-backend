@@ -26,10 +26,13 @@ cautela (probar en un proyecto de Supabase separado antes de migrar, no romper a
 multi-tenant, etc.). Esa cautela se mantiene igual — es el objetivo declarado de una
 herramienta seria y duradera a nivel nacional lo que la justifica, no que haya negocios reales
 en riesgo hoy mismo. Pero antes de que exista la primera iglesia real, hay más margen para
-decisiones que después serían mucho más costosas de revertir (cambios de esquema de auth,
-cutover completo a Supabase Auth, activar RLS, etc.) — vale la pena tenerlo presente al decidir
-cuánto esperar antes de avanzar en algo. Actualizar esta sección en cuanto la primera iglesia
-real empiece a operar en la plataforma.
+decisiones que después serían mucho más costosas de revertir — vale la pena tenerlo presente al
+decidir cuánto esperar antes de avanzar en algo. El cutover completo a Supabase Auth (Fase 7 de
+`docs/supabase.md`) y la activación de RLS multi-tenant (Fase 8) ya se hicieron aprovechando ese
+margen: ambos están **activos en el backend en línea** desde ~2026-08-25 (ver `FEATURES.md`). Lo
+que sigue en esa categoría hoy: elegir pasarela de pago, cambios grandes de esquema o del modelo
+de tenant. Actualizar esta sección en cuanto la primera iglesia real empiece a operar en la
+plataforma.
 
 ## Problema que resuelve
 

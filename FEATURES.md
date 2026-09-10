@@ -2249,3 +2249,58 @@ freno anti-fuerza-bruta por cuenta además del techo por IP que ya existía.
   cuenta** (`activo=false`), y desde ahí vuelve a 401 genérico. Un login correcto en la
   cuenta del fundador tras 1 fallo → contador de nuevo en 0. `tesorero@demo.cl` restaurado
   (`activo=true`, contador 0). Datos de prueba borrados.
+
+## [2026-09-09 22:15] Verificación del aislamiento multi-tenant (RLS) + consolidación de `staging` en `main` + docs al día
+
+El fundador (con publicidad en Meta corriendo y un interesado en pagar licencia anual) pidió
+"solucionar el aislamiento multi-tenant". Al revisarlo contra las bases reales resultó que **ya
+estaba resuelto y activo** — las notas de `README.md`/`CLAUDE.md` que decían "RLS todavía no
+está activo" quedaron desactualizadas desde ~2026-08-25. Esta entrada documenta la verificación
+y pone la documentación y las ramas al día. **Sin cambios de código ni de esquema.**
+
+**Verificación de RLS contra las bases reales (solo lectura, vía MCP de Supabase):**
+- Backend en línea (`evangelicapp-backend.onrender.com`, rama `staging`) → proyecto
+  `Backend-staging`. `pg_stat_activity` muestra una conexión activa del rol **`app_runtime`**
+  (vía Supavisor); `app_runtime` **no tiene `BYPASSRLS`**.
+- `Backend-staging`: RLS `ENABLE` + `FORCE` en las 20 tablas de tenant (`refresh_tokens` fuera
+  a propósito); policy `tenant_isolation` en las 18 que corresponden; las 3 funciones helper
+  (`app_iglesia_id`/`app_usuario_id`/`app_is_privileged`); `_prisma_migrations` completo y
+  reconciliado; policies de `realtime.messages` (tenant + convocatoria) presentes. Se leyeron
+  las expresiones `USING`/`WITH CHECK` de las policies y coinciden con la migración
+  `20260820181542`.
+- Sin errores de RLS/permisos en los logs de Render desde el 2026-09-08.
+- No se pudo hacer el test `SET ROLE app_runtime` por MCP (el rol de conexión del MCP no es
+  miembro de `app_runtime`), pero el QA end-to-end contra la app corriendo ya está documentado
+  en las entradas del 2026-08-26/27 y 2026-09-09 (aislamiento cross-tenant, fail-closed, bypass
+  de SUPER_ADMIN, bug de Accesos encontrado *porque* RLS estaba activo).
+- **Conclusión:** hoy hay dos capas activas — filtro por `iglesiaId` en la app + RLS en Postgres.
+
+**Estado del proyecto `Backend` (ref `lkcgiqmgdefhxhckedga`):** tiene las policies RLS + rol
+`app_runtime` + funciones (del 2026-08-20/21) pero le faltan 4 migraciones posteriores
+(`20260907131802`, `20260908144025`, `20260908203618`, `20260908204221`) y su
+`_prisma_migrations` no conoce las aplicadas por MCP. Hoy solo la apunta `.env` local (última
+actividad 2026-08-21; 3 iglesias de prueba, 8 usuarios `@gmail` del propio equipo). Decisión del
+fundador: consolidar el deployment actual como producción → producción queda en `Backend-staging`;
+el rol futuro de `Backend` (dev aislado vs. retirar) queda por confirmar.
+
+**Ramas:** `main` estaba congelada en `7fa73d89` (2026-08-04) — sin nada del trabajo de Supabase
+/ Auth / RLS / Realtime (~30 commits, ~8.900 líneas, todo solo en `staging`). Riesgo: `main` es
+la rama por defecto del repo y desplegarla daría un backend sin RLS ni el auth nuevo. `main` es
+ancestro estricto de `staging`, así que se hizo **fast-forward** `main` → `staging` (revertible
+con `git push origin 7fa73d89:main --force`). Recomendado a futuro: trabajar y desplegar desde
+`main`, o dejar `staging` como rama por defecto.
+
+**Docs actualizadas:**
+- `README.md`: sección "Base de datos" reescrita (2 proyectos: `Backend-staging` = producción vía
+  `app_runtime` con RLS activa, `Backend` = datos de prueba + pendientes); nuevo párrafo "RLS /
+  aislamiento multi-tenant"; item de "Pendientes conocidos" de la Fase 8 pasa de "no está activa"
+  a "activa + lo que queda es sobre `Backend`"; nota del módulo `realtime` y hosting al día.
+- `docs/supabase-todo.md`: los seguimientos de "actualizar `DATABASE_URL` en Render" y "smoke
+  test end-to-end" quedan marcados ✅ hechos; el pendiente real pasa a ser `Backend`.
+- `CLAUDE.md`: el paréntesis de "decisiones costosas de revertir" aclara que el cutover a
+  Supabase Auth (Fase 7) y RLS (Fase 8) ya se hicieron y están activos.
+
+**Funcionalidad:** ninguna nueva. Deja constancia verificada de que el aislamiento multi-tenant
+está activo en producción, elimina la mina de la rama `main` desactualizada, y sincroniza la
+documentación con la realidad para que la próxima sesión (o el fundador) no vuelva a perseguir
+un problema ya resuelto.

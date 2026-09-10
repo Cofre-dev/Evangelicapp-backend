@@ -32,17 +32,18 @@ bitácora que `FEATURES.md`.
 Ya no queda ninguna fase sin empezar — las 8 están hechas o bloqueadas por una decisión de
 negocio ajena a este documento (Fase 6). Lo que sigue son seguimientos puntuales, no fases:
 
-| Qué | Por qué importa |
+| Qué | Estado |
 |---|---|
-| Actualizar `DATABASE_URL` en el dashboard de Render al rol `app_runtime` (no `postgres`) | Sin esto, el backend **desplegado** sigue conectando como `postgres` (que tiene `BYPASSRLS`) y las policies de la Fase 8 no le aplican — el trabajo de RLS queda activo en la base pero sin efecto real en producción hasta que se haga este cambio. Ver entrada del 2026-08-20 en `FEATURES.md`. |
-| Reconciliar `_prisma_migrations` en la base real | La migración de RLS se aplicó a mano (MCP de Supabase) porque este entorno no tiene conectividad directa a la base (`P1001`) — correr `prisma migrate resolve --applied 20260820181542_enable_rls_tenant_isolation` la próxima vez que alguien tenga esa conectividad. |
-| Smoke test end-to-end de la Fase 8 con la app corriendo de verdad | Lo que se verificó fue a nivel SQL (simulando el rol/contexto) y por compilación, no con requests HTTP reales — falta confirmar login, las 3 rutas públicas por token, dashboard de SuperAdmin, cron y WebSocket contra la base con RLS ya activo. |
+| ~~Actualizar `DATABASE_URL` en Render al rol `app_runtime`~~ | ✅ **Hecho** (~2026-08-25). El backend en línea conecta como `app_runtime` contra `Backend-staging` — RLS `FORCE` se aplica de verdad. Confirmado en `pg_stat_activity` y logs. |
+| ~~Smoke test end-to-end de la Fase 8 con la app corriendo~~ | ✅ **Hecho** (2026-08-26/27, 2026-09-08/09). Aislamiento cross-tenant bloqueado, fail-closed sin contexto, bypass de SUPER_ADMIN OK; se encontró y corrigió el bug del módulo Accesos *porque* RLS estaba activo de verdad. |
+| Reconciliar `_prisma_migrations` en `Backend` + aplicarle 4 migraciones | En `Backend-staging` (producción) está todo reconciliado. En `Backend` faltan `20260907131802`, `20260908144025`, `20260908203618`, `20260908204221` y el `resolve` de las 2 aplicadas por MCP (`20260820181542`, `20260821035755`). Correr desde un entorno con conectividad directa a `Backend`. |
+| Decidir el rol futuro del proyecto `Backend` | Producción quedó en `Backend-staging`. `Backend` (datos de prueba de agosto) puede quedar como dev aislado o retirarse — decisión del fundador. |
 
 **No incluido en el cutover de Fase 7, a considerar por separado:** borrar el modelo `RefreshToken` del schema (se dejó de usar pero no se tiró la tabla — migración aparte, después de confirmar que el corte funciona sin sobresaltos); una conexión real de WebSocket contra el `RealtimeGateway` corregido no se probó en vivo (sí se verificó por compilación y por compartir el mismo patrón ya probado del guard HTTP); el camino de `IglesiaSuspendidaException` en el login/guard nuevo no se re-probó explícitamente (lógica sin cambios respecto a la versión anterior, ya validada).
 
 ## Lo que haremos
 
 Las 8 fases del plan original ya están resueltas (Fase 6 sigue bloqueada por una decisión de
-negocio, no técnica — ver tabla de arriba). Lo que queda son los 3 seguimientos de la tabla de
-Pendiente, en particular actualizar `DATABASE_URL` en Render — sin eso, la Fase 8 no protege
-todavía el backend que de verdad está en producción.
+negocio, no técnica — ver tabla de arriba). **RLS multi-tenant está activo y verificado en el
+backend en línea.** Lo que queda son seguimientos sobre el proyecto `Backend` (migraciones +
+reconciliación + decidir si sigue existiendo), no sobre el aislamiento en sí.

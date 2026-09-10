@@ -109,7 +109,7 @@ No hay pasarela de pago todavía: el SuperAdmin confirma los pagos a mano (`POST
 | `notas` | `/notas/*` | Tareas/recordatorios asignables (MANAGER crea/asigna, equipo marca como hechas) |
 | `mail` | — | Servicio interno (Nodemailer o Resend, según `MAIL_PROVIDER`), no expone rutas |
 | `whatsapp` | — | Servicio interno (Meta Cloud API) — convocatoria a integrantes vía `eventos.service.ts#notificarIntegrantes`, siempre junto al email, nunca en su reemplazo. Sin `WHATSAPP_ACCESS_TOKEN` configurado, queda en no-op (el email sigue funcionando) |
-| `realtime` | WebSocket (no HTTP) | Un solo gateway para 3 pantallas en vivo (dashboard SuperAdmin, evento del pastor, censo de integrantes) — WebSocket propio, no Supabase Realtime nativo (evita depender de RLS, que todavía no está activo) |
+| `realtime` | WebSocket (no HTTP) | Un solo gateway para 3 pantallas en vivo (dashboard SuperAdmin, evento del pastor, censo de integrantes) — WebSocket propio, no Supabase Realtime nativo (decisión tomada cuando RLS todavía no estaba activo; hoy convive con la migración a Supabase Broadcast en `docs/realtime-migration.md`) |
 | `supabase` | — | Módulo global (`@Global()`): `SupabaseStorageService` (Storage — logos/fotos), `SupabaseAuthService` (login/refresh/signOut reales contra GoTrue), `SupabaseJwtVerifierService` (verificación JWKS del access token) |
 | `prisma` | — | Módulo global que expone `PrismaService` |
 
@@ -121,13 +121,30 @@ No hay pasarela de pago todavía: el SuperAdmin confirma los pagos a mano (`POST
 
 ### Base de datos
 
-El proveedor de base de datos es **Supabase** (proyecto `Backend`, Postgres gestionado) —
-`DATABASE_URL` en `.env` apunta ahí directamente; es la fuente de verdad real, no un fallback.
-**Nota:** esa base ya tiene datos de uso real del equipo fundador (no es solo data descartable de
-demo) — confirmar antes de correr el seed o cualquier operación masiva. `docker-compose.yml`
-sigue en `backend/` por si hace falta un Postgres local aislado para pruebas puntuales, pero
-**ya no es el flujo de trabajo habitual** (se usó temporalmente entre el 2026-08-07 y el
-2026-08-16 mientras el proyecto de Supabase estaba pausado — ver `FEATURES.md`).
+El proveedor de base de datos es **Supabase** (Postgres gestionado). Hay dos proyectos:
+
+- **Producción** — proyecto Supabase `Backend-staging` (ref `woerftoeqarupnrggupl`). Es la base
+  del backend en línea (`evangelicapp-backend.onrender.com`, auto-deploy desde la rama `staging`).
+  El backend **conecta como el rol `app_runtime` (sin `BYPASSRLS`), así que las policies de RLS
+  se aplican de verdad** — ver "RLS / aislamiento multi-tenant" abajo. Las migraciones se aplican
+  a mano (MCP de Supabase o `prisma migrate deploy` con una conexión `postgres` elevada); el build
+  de Render **no** corre `migrate deploy`. El nombre "staging" es histórico (ver `FEATURES.md`
+  2026-08-25); hoy es el entorno de producción.
+- **`Backend`** (ref `lkcgiqmgdefhxhckedga`) — tiene los datos de prueba de agosto del equipo
+  fundador y las policies de RLS + rol `app_runtime` ya creados, pero le faltan 4 migraciones
+  posteriores (ver "Pendientes conocidos"). Hoy solo la apunta `DATABASE_URL` en `.env` local.
+  Confirmar antes de correr el seed o cualquier operación masiva.
+
+`docker-compose.yml` sigue en `backend/` por si hace falta un Postgres local aislado para pruebas
+puntuales, pero **ya no es el flujo de trabajo habitual** (se usó temporalmente entre el
+2026-08-07 y el 2026-08-16 mientras el proyecto de Supabase estaba pausado — ver `FEATURES.md`).
+
+**RLS / aislamiento multi-tenant:** además del filtro por `iglesiaId` que hace cada query de la
+app, Postgres aplica Row Level Security (`FORCE`) en las 18 tablas de tenant. La app fija
+`app.iglesia_id` / `app.rol` / `app.usuario_id` por request (`AsyncLocalStorage` + `$extends` de
+Prisma con `set_config` transaction-local; ver `src/prisma/prisma.service.ts` y
+`src/common/context/tenant-context.ts`), con bypass explícito y acotado (`runAsService`) en
+login, las 3 rutas públicas por token y el cron. Detalle en `docs/supabase.md` (Fase 8).
 
 Auth es un proyecto de Supabase **separado y desechable** (`Backend-auth-test`,
 `SUPABASE_AUTH_TEST_*` en `.env`) — nunca el mismo proyecto que Storage/DB. Ver
@@ -247,5 +264,16 @@ Jest + ts-jest, specs colocados junto al código como `*.spec.ts` (convención d
 - No hay pasarela de pago: los planes/facturación se gestionan con confirmación manual del SuperAdmin (ver "Planes comerciales y facturación" más arriba). El módulo de facturación del lado de la iglesia es solo informativo.
 - El modelo `RefreshToken` sigue en `schema.prisma` pero ya no se usa (Supabase Auth maneja la rotación/reuso de refresh tokens desde el corte de la Fase 7) — pendiente una migración aparte para eliminar la tabla, no urgente.
 - Recuperación de contraseña (`POST /auth/reset-password`): cierra las `SesionActividad` locales del usuario pero **no revoca los refresh tokens de Supabase** — hacerlo exige un access token del usuario (que en un "olvidé mi contraseña" casi nunca hay) o una llamada admin por-usuario que `SupabaseAuthService` no expone todavía. Riesgo acotado a la vida de un refresh token (una sesión vieja sobrevive hasta su próximo refresh). Ver `FEATURES.md` 2026-09-08.
-- Fase 8 de `docs/supabase.md` (RLS) ya está implementada (policies + rol `app_runtime` sin `BYPASSRLS`, ver `FEATURES.md` 2026-08-20) pero **no está activa en producción todavía**: `DATABASE_URL` en Render sigue apuntando al rol `postgres` (con `BYPASSRLS`), no a `app_runtime`. Falta actualizar esa variable de entorno en Render y correr `prisma migrate resolve --applied 20260820181542_enable_rls_tenant_isolation` desde un entorno con conectividad directa a la base.
-- Hosting de la API: hasta ahora Render (ver bitácora en `FEATURES.md`) — a confirmar con el fundador si sigue siendo así.
+- Fase 8 de `docs/supabase.md` (RLS) **está activa en el backend en línea** desde ~2026-08-25:
+  `DATABASE_URL` en Render conecta como `app_runtime` (sin `BYPASSRLS`) contra el proyecto
+  `Backend-staging`, con RLS `FORCE` en las 18 tablas de tenant. Verificado end-to-end (ver
+  `FEATURES.md` 2026-08-26/27 y 2026-09-09). **Lo que queda:** (a) el proyecto `Backend` tiene
+  las policies pero le faltan las 4 migraciones posteriores a la de RLS
+  (`20260907131802_realtime_broadcast_authorization`, `20260908144025_add_password_reset_token`,
+  `20260908203618_add_login_lockout`, `20260908204221_realtime_convocatoria_topic`) y su
+  `_prisma_migrations` no conoce las aplicadas por MCP — reconciliar con
+  `prisma migrate resolve --applied <nombre>` (para `20260820181542_enable_rls_tenant_isolation`,
+  `20260821035755_remove_rol_miembro` y las 4 de arriba) la próxima vez que alguien tenga
+  conectividad directa a esa base; (b) decidir el rol futuro de `Backend` (dev aislado o
+  retirarlo).
+- Hosting de la API: Render (`Evangelicapp-backend`, plan Starter, auto-deploy desde `staging`).
