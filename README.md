@@ -130,14 +130,15 @@ El proveedor de base de datos es **Supabase** (Postgres gestionado). Hay dos pro
   a mano (MCP de Supabase o `prisma migrate deploy` con una conexión `postgres` elevada); el build
   de Render **no** corre `migrate deploy`. El nombre "staging" es histórico (ver `FEATURES.md`
   2026-08-25); hoy es el entorno de producción.
-- **`Backend`** (ref `lkcgiqmgdefhxhckedga`) — tiene los datos de prueba de agosto del equipo
-  fundador y las policies de RLS + rol `app_runtime` ya creados, pero le faltan 4 migraciones
-  posteriores (ver "Pendientes conocidos"). Hoy solo la apunta `DATABASE_URL` en `.env` local.
-  Confirmar antes de correr el seed o cualquier operación masiva.
+- **`Backend`** (ref `lkcgiqmgdefhxhckedga`) — **en retiro** (decisión 2026-09-09). Tenía los datos
+  de prueba de agosto del equipo fundador; se guardó un snapshot antes de retirarlo. Se pausa y,
+  si no se lo extraña, se elimina. Ya no es la base de nada.
 
-`docker-compose.yml` sigue en `backend/` por si hace falta un Postgres local aislado para pruebas
-puntuales, pero **ya no es el flujo de trabajo habitual** (se usó temporalmente entre el
-2026-08-07 y el 2026-08-16 mientras el proyecto de Supabase estaba pausado — ver `FEATURES.md`).
+Para **desarrollo local** se usa un Postgres descartable (el `docker-compose.yml` de `backend/`, o
+cualquier Postgres local) — `DATABASE_URL` en `.env` apunta ahí. Para probar una migración que
+toca RLS / roles / `realtime` con fidelidad a producción, se usa un **branch de Supabase** de
+`Backend-staging` (plan Pro), no un segundo proyecto permanente — ver "Migraciones de base de
+datos".
 
 **RLS / aislamiento multi-tenant:** además del filtro por `iglesiaId` que hace cada query de la
 app, Postgres aplica Row Level Security (`FORCE`) en las 18 tablas de tenant. La app fija
@@ -217,25 +218,33 @@ Si no se pasa `--password`, se genera una temporal que se imprime una sola vez e
 
 ## Migraciones de base de datos
 
-**Importante — `DATABASE_URL` apunta al proyecto real de Supabase, compartido, no a un Postgres
-local propio de cada dev.** `npm run prisma:migrate` (`prisma migrate dev`) está pensado para un
-Postgres descartable donde Prisma puede resetear/recrear libremente — correrlo tal cual contra la
-base compartida es arriesgado. Convención de este repo (ver `github.md`): escribir la migración,
-revisar el SQL generado, y aplicarla con `prisma migrate deploy` (no genera nada nuevo, solo
-aplica lo que ya existe en `prisma/migrations/`), igual que se hace en producción:
+**El build de Render NO corre `prisma migrate deploy`** — las migraciones se aplican siempre a
+mano. El flujo, de menor a mayor fidelidad con producción:
 
-```bash
-# tras editar prisma/schema.prisma — generar el SQL sin aplicarlo todavía
-npx prisma migrate dev --create-only --name descripcion_del_cambio
-# revisar prisma/migrations/<timestamp>_descripcion_del_cambio/migration.sql a mano
-npx prisma migrate deploy
-```
+1. **Escribir la migración contra un Postgres local descartable.** `DATABASE_URL` en `.env`
+   apunta ahí; `prisma migrate dev` puede resetear/recrear libre:
 
-**No editar migraciones ya aplicadas en `main`**; si algo quedó mal, generar una migración
-correctiva nueva. Antes de aplicar cualquier migración contra la base real, correr
-`npx prisma migrate status` primero — si aparece una fila de tracking corrupta o una tabla que no
-está en `schema.prisma`, investigar antes de seguir (ver `FEATURES.md`, entrada del 2026-08-16,
-para un caso real de esto).
+   ```bash
+   npx prisma migrate dev --name descripcion_del_cambio
+   # revisar prisma/migrations/<timestamp>_descripcion_del_cambio/migration.sql a mano
+   ```
+
+2. **Si la migración toca RLS, roles, o el schema `realtime`**: probarla contra un **branch de
+   Supabase** de `Backend-staging` (plan Pro) — un fork efímero con los mismos primitivos que
+   prod (rol `app_runtime`, `FORCE ROW LEVEL SECURITY`, `realtime.messages`). Crear el branch,
+   aplicar el SQL, verificar el aislamiento/fail-closed, y borrarlo. Un Postgres local **no**
+   reproduce esto (es donde se escondió el bug del `BYPASSRLS` y el de Accesos — ver `FEATURES.md`
+   2026-08-20 y 2026-08-26).
+
+3. **Aplicar a producción** (`Backend-staging`): vía las herramientas MCP de Supabase
+   (`apply_migration`), o `prisma migrate deploy` con una connection string del rol `postgres`
+   (no `app_runtime` — no tiene privilegios de DDL). Después reconciliar `_prisma_migrations` si
+   se aplicó por MCP.
+
+**No editar migraciones ya aplicadas**; si algo quedó mal, generar una migración correctiva
+nueva. Antes de aplicar contra prod, correr `npx prisma migrate status` — si aparece una fila de
+tracking corrupta o una tabla que no está en `schema.prisma`, investigar antes de seguir (ver
+`FEATURES.md`, entrada del 2026-08-16, para un caso real).
 
 ## Testing
 
@@ -267,13 +276,9 @@ Jest + ts-jest, specs colocados junto al código como `*.spec.ts` (convención d
 - Fase 8 de `docs/supabase.md` (RLS) **está activa en el backend en línea** desde ~2026-08-25:
   `DATABASE_URL` en Render conecta como `app_runtime` (sin `BYPASSRLS`) contra el proyecto
   `Backend-staging`, con RLS `FORCE` en las 18 tablas de tenant. Verificado end-to-end (ver
-  `FEATURES.md` 2026-08-26/27 y 2026-09-09). **Lo que queda:** (a) el proyecto `Backend` tiene
-  las policies pero le faltan las 4 migraciones posteriores a la de RLS
-  (`20260907131802_realtime_broadcast_authorization`, `20260908144025_add_password_reset_token`,
-  `20260908203618_add_login_lockout`, `20260908204221_realtime_convocatoria_topic`) y su
-  `_prisma_migrations` no conoce las aplicadas por MCP — reconciliar con
-  `prisma migrate resolve --applied <nombre>` (para `20260820181542_enable_rls_tenant_isolation`,
-  `20260821035755_remove_rol_miembro` y las 4 de arriba) la próxima vez que alguien tenga
-  conectividad directa a esa base; (b) decidir el rol futuro de `Backend` (dev aislado o
-  retirarlo).
+  `FEATURES.md` 2026-08-26/27 y 2026-09-09). No queda nada pendiente del lado de producción.
+- El proyecto Supabase `Backend` se retira (ver "Base de datos"). Sus 4 migraciones faltantes y
+  la reconciliación de `_prisma_migrations` ya no importan una vez pausado/eliminado.
+- El proyecto Supabase de prod todavía se llama `Backend-staging` — conviene renombrarlo en el
+  dashboard (el ref/connection string no cambia, así que no hay que tocar variables de entorno).
 - Hosting de la API: Render (`Evangelicapp-backend`, plan Starter, auto-deploy desde `staging`).

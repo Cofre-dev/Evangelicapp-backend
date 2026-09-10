@@ -2304,3 +2304,30 @@ con `git push origin 7fa73d89:main --force`). Recomendado a futuro: trabajar y d
 está activo en producción, elimina la mina de la rama `main` desactualizada, y sincroniza la
 documentación con la realidad para que la próxima sesión (o el fundador) no vuelva a perseguir
 un problema ya resuelto.
+
+**Actualización (2026-09-09 ~22:40) — decisión sobre `Backend` + flujo de dev sin proyecto
+Supabase permanente.** El fundador eligió consolidar el deployment actual como producción y
+**retirar el proyecto Supabase `Backend`** (en vez de mantenerlo como staging permanente, que ya
+había driftado 4 migraciones y llevaba semanas sin reconciliar `_prisma_migrations` — un staging
+desactualizado da confianza falsa).
+
+- **Snapshot de `Backend` guardado** antes de retirarlo: todas las tablas de negocio a JSON
+  (`iglesias`, `usuarios` sin password, `eventos`, `predicadores`, `asistencias_evento`,
+  `integrantes`, finanzas + auditoría, `notas`, ceremonias, `accesos_modulo`, `pagos_iglesia`,
+  `sesiones_actividad`). Confirmado que es data de prueba del propio equipo ("Iglesia Colo Colo",
+  integrantes con nombres de futbolistas, movimientos de $430M "presupuesto") — nada de un cliente
+  real. El archivo se le pasó al fundador; no se commitea al repo (trae emails/teléfonos de
+  prueba).
+- **Nuevo flujo de dev** (documentado en `README.md` "Migraciones de base de datos" y
+  `backend/.env.example`): (1) escribir la migración contra un Postgres local descartable
+  (`docker-compose.yml`), `prisma migrate dev` libre; (2) si toca RLS/roles/`realtime`, probarla
+  contra un **branch de Supabase** de `Backend-staging` (plan Pro) — fork efímero con los mismos
+  primitivos que prod, que un Postgres local no reproduce; (3) aplicar a prod por MCP
+  (`apply_migration`) o `prisma migrate deploy` con conexión `postgres`, y reconciliar
+  `_prisma_migrations`.
+- **Docs:** `README.md` (sección "Base de datos" → `Backend` "en retiro", dev local = Docker +
+  branch; "Pendientes conocidos" → Fase 8 sin pendientes de prod, se agrega "renombrar
+  `Backend-staging`"); `docs/supabase-todo.md` (tabla de seguimientos actualizada).
+- **Pendiente del fundador:** apuntar `DATABASE_URL` local a Docker; avisar para pausar `Backend`
+  (reversible; se elimina en 1-2 semanas si no se lo extraña); renombrar `Backend-staging` en el
+  dashboard (ref/connection no cambia).

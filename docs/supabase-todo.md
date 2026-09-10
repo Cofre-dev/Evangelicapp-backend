@@ -36,8 +36,9 @@ negocio ajena a este documento (Fase 6). Lo que sigue son seguimientos puntuales
 |---|---|
 | ~~Actualizar `DATABASE_URL` en Render al rol `app_runtime`~~ | ✅ **Hecho** (~2026-08-25). El backend en línea conecta como `app_runtime` contra `Backend-staging` — RLS `FORCE` se aplica de verdad. Confirmado en `pg_stat_activity` y logs. |
 | ~~Smoke test end-to-end de la Fase 8 con la app corriendo~~ | ✅ **Hecho** (2026-08-26/27, 2026-09-08/09). Aislamiento cross-tenant bloqueado, fail-closed sin contexto, bypass de SUPER_ADMIN OK; se encontró y corrigió el bug del módulo Accesos *porque* RLS estaba activo de verdad. |
-| Reconciliar `_prisma_migrations` en `Backend` + aplicarle 4 migraciones | En `Backend-staging` (producción) está todo reconciliado. En `Backend` faltan `20260907131802`, `20260908144025`, `20260908203618`, `20260908204221` y el `resolve` de las 2 aplicadas por MCP (`20260820181542`, `20260821035755`). Correr desde un entorno con conectividad directa a `Backend`. |
-| Decidir el rol futuro del proyecto `Backend` | Producción quedó en `Backend-staging`. `Backend` (datos de prueba de agosto) puede quedar como dev aislado o retirarse — decisión del fundador. |
+| ~~Decidir el rol futuro del proyecto `Backend`~~ | ✅ **Decidido 2026-09-09: se retira.** Producción quedó en `Backend-staging`. `Backend` (datos de prueba de agosto, snapshot guardado) se pausa y luego se elimina. Sus 4 migraciones faltantes y su `_prisma_migrations` sin reconciliar dejan de importar. |
+| Renombrar el proyecto Supabase `Backend-staging` | Es producción; el nombre confunde. El ref/connection string no cambia al renombrar, así que no hay que tocar variables de entorno. Acción de dashboard. |
+| Dev local sin proyecto Supabase permanente | `DATABASE_URL` local → Postgres de Docker. Migraciones que tocan RLS/roles/`realtime` se prueban en un **branch** de `Backend-staging` (plan Pro), efímero. Ver README "Migraciones de base de datos". |
 
 **No incluido en el cutover de Fase 7, a considerar por separado:** borrar el modelo `RefreshToken` del schema (se dejó de usar pero no se tiró la tabla — migración aparte, después de confirmar que el corte funciona sin sobresaltos); una conexión real de WebSocket contra el `RealtimeGateway` corregido no se probó en vivo (sí se verificó por compilación y por compartir el mismo patrón ya probado del guard HTTP); el camino de `IglesiaSuspendidaException` en el login/guard nuevo no se re-probó explícitamente (lógica sin cambios respecto a la versión anterior, ya validada).
 
@@ -45,5 +46,5 @@ negocio ajena a este documento (Fase 6). Lo que sigue son seguimientos puntuales
 
 Las 8 fases del plan original ya están resueltas (Fase 6 sigue bloqueada por una decisión de
 negocio, no técnica — ver tabla de arriba). **RLS multi-tenant está activo y verificado en el
-backend en línea.** Lo que queda son seguimientos sobre el proyecto `Backend` (migraciones +
-reconciliación + decidir si sigue existiendo), no sobre el aislamiento en sí.
+backend en línea.** Lo que queda es infraestructura, no aislamiento: pausar/eliminar `Backend`,
+renombrar `Backend-staging`, y apuntar el dev local a Docker + branches de Supabase.
