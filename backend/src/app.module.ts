@@ -80,6 +80,10 @@ export class AppModule implements NestModule {
         // logueado abre la landing en el mismo navegador, su cookie de sesión no debe
         // exigir el header CSRF que esa landing pública nunca envía.
         { path: 'integrantes/registro/:qrToken', method: RequestMethod.POST },
+        // Baja/reactivación pública del reporte financiero (link del correo): mismo caso —
+        // el token de baja es la autenticación (ver ReporteCongregacionSuscripcionController).
+        { path: 'reporte-financiero/suscripcion/:token/baja', method: RequestMethod.POST },
+        { path: 'reporte-financiero/suscripcion/:token/reactivar', method: RequestMethod.POST },
         // Refresh: es el endpoint que le da al frontend un csrfToken nuevo cuando perdió
         // el que tenía en memoria (ej. tras un F5) — exigirle CSRF para conseguir el
         // primer csrfToken es un candado que pide su propia llave. A diferencia de

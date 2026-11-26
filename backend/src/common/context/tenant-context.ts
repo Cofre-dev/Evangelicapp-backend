@@ -11,7 +11,9 @@ import { Rol } from '@prisma/client';
  * para los pocos puntos que legítimamente necesitan leer/escribir sin estar
  * scopeados a una iglesia: login/refresh (todavía no hay identidad resuelta),
  * las 3 rutas públicas por token (predicadores/asistencias/registro de
- * integrantes) y el cron de facturación (cruza todas las iglesias a propósito).
+ * integrantes), el cron de facturación (cruza todas las iglesias a propósito) y el
+ * reporte financiero a la congregación (su cron mensual y la suscripción pública por
+ * token — ver ReporteCongregacionService/Cron).
  * `grep -r runAsService` encuentra todos los puntos de bypass de una sola vez.
  *
  * `inManagedTransaction` lo usa únicamente `PrismaService#withTenantTransaction`

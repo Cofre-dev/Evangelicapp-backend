@@ -73,6 +73,13 @@ enum MedioPago {
   TRANSFERENCIA
 }
 
+/// Cómo se disparó un envío del reporte financiero a la congregación (ver
+/// ReporteCongregacionService): por el cron mensual o con "Enviar ahora" del pastor.
+enum OrigenEnvioReporte {
+  AUTOMATICO
+  MANUAL
+}
+
 enum AccionAuditoria {
   CREACION
   EDICION
@@ -128,6 +135,17 @@ model Iglesia {
   /// Regenerable por el pastor para invalidar un QR impreso (ej. si se filtró) sin tocar el id real del tenant.
   integrantesQrToken String? @unique @default(cuid())
 
+  /// Reporte financiero mensual a la congregación (ver ReporteCongregacionService):
+  /// interruptor voluntario, solo lo puede cambiar el MANAGER. Apagado por defecto —
+  /// ninguna iglesia le manda nada a su congregación sin que el pastor lo decida.
+  reporteFinancieroActivo        Boolean   @default(false)
+  /// Última vez que se encendió el interruptor (null si nunca). El cron solo envía de
+  /// forma automática el reporte de un mes si el interruptor ya estaba encendido antes de
+  /// que terminara ese mes — encenderlo el día 3 no dispara solo el reporte del mes pasado.
+  reporteFinancieroActivadoEn    DateTime?
+  reporteFinancieroActivadoPorId String?
+  reporteFinancieroActivadoPor   Usuario?  @relation("ReporteFinancieroActivadoPor", fields: [reporteFinancieroActivadoPorId], references: [id], onDelete: SetNull)
+
   usuarios                 Usuario[]
   eventos                  Evento[]
   categoriasFinancieras    CategoriaFinanciera[]
@@ -143,6 +161,7 @@ model Iglesia {
   accesosModulo            AccesoModulo[]
   pagos                    PagoIglesia[]
   sesionesActividad        SesionActividad[]
+  enviosReporteFinanciero  EnvioReporteFinanciero[]
 
   @@map("iglesias")
 }
@@ -236,6 +255,8 @@ model Usuario {
   accesosOtorgados      AccesoModulo[]           @relation("AccesosOtorgados")
   pagosRegistrados      PagoIglesia[]            @relation("PagoIglesiaRegistradoPor")
   sesionesActividad     SesionActividad[]
+  reportesActivados     Iglesia[]                @relation("ReporteFinancieroActivadoPor")
+  reportesEnviados      EnvioReporteFinanciero[] @relation("EnvioReporteEnviadoPor")
 
   @@index([iglesiaId])
   @@index([iglesiaId, ultimoAccesoAt])
@@ -447,6 +468,11 @@ model CategoriaFinanciera {
   tipo      TipoMovimiento
   createdAt DateTime       @default(now())
 
+  /// Si es true, el reporte a la congregación no muestra esta categoría por nombre: su
+  /// monto se suma en "Otros ingresos"/"Otros egresos" (los totales no cambian). Lo
+  /// decide el MANAGER (ver ReporteCongregacionService#actualizarCategoriasOcultas).
+  ocultaEnReporte Boolean @default(false)
+
   iglesiaId String
   iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
 
@@ -526,6 +552,42 @@ model MovimientoAuditLog {
   @@map("movimientos_auditoria")
 }
 
+/// Un envío del reporte financiero mensual a la congregación (ver
+/// ReporteCongregacionService). `@@unique([iglesiaId, periodo])` es la garantía de
+/// idempotencia: un mes se envía una sola vez por iglesia, ya sea por el cron o con
+/// "Enviar ahora" — un reintento o una doble corrida choca contra el unique y no
+/// duplica correos. `snapshot` congela los números tal como salieron en el correo
+/// (si después se edita un movimiento de ese mes, el historial sigue mostrando lo enviado).
+model EnvioReporteFinanciero {
+  id      String             @id @default(cuid())
+  /// Mes reportado, formato `YYYY-MM`.
+  periodo String
+  origen  OrigenEnvioReporte
+
+  /// Integrantes con consentimiento al momento del envío.
+  destinatarios Int
+  /// Se completan al terminar el envío en segundo plano (null mientras sigue en curso).
+  enviados      Int?
+  fallidos      Int?
+  completadoEn  DateTime?
+
+  /// ReporteFinancieroData (ver reporte-congregacion.util.ts) tal como se envió.
+  snapshot Json
+
+  createdAt DateTime @default(now())
+
+  iglesiaId String
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  /// Null en los envíos automáticos (los hace el cron, no un usuario).
+  enviadoPorId String?
+  enviadoPor   Usuario? @relation("EnvioReporteEnviadoPor", fields: [enviadoPorId], references: [id], onDelete: SetNull)
+
+  @@unique([iglesiaId, periodo])
+  @@index([iglesiaId, createdAt])
+  @@map("envios_reporte_financiero")
+}
+
 // ==========================================================================
 // MÓDULO 3 — NOTAS / TAREAS
 // ==========================================================================
@@ -580,8 +642,18 @@ model Integrante {
   /// (puede llevar años en la congregación y recién ahora completar el censo).
   /// Nullable por la misma razón que run: filas viejas no lo tienen.
   miembroDesde   DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+
+  /// Consentimiento explícito para recibir el reporte financiero mensual de la iglesia
+  /// (Ley 19.628 / 21.719). Opt-in: false por defecto; solo lo marca la propia persona en
+  /// el formulario del QR, y lo puede revocar con el link de baja de cada correo.
+  aceptaReporteFinanciero   Boolean   @default(false)
+  aceptaReporteFinancieroEn DateTime?
+  /// Token del link "dejar de recibir" de los correos del reporte. Se genera la primera
+  /// vez que se le envía un reporte; nunca se devuelve en el listado de integrantes.
+  tokenBajaReporte          String?   @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   iglesiaId String
   iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)

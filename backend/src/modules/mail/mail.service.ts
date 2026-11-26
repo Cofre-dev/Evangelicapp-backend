@@ -1,5 +1,10 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  ReporteFinancieroData,
+  TotalPorCategoria,
+  nombrePeriodo,
+} from '../finanzas/reporte-congregacion/reporte-congregacion.util';
 import { EMAIL_PROVIDER, EmailProvider } from './providers/email-provider.interface';
 
 interface InvitacionPredicadorParams {
@@ -52,6 +57,27 @@ interface RecuperacionContrasenaParams {
   /** Minutos de validez del enlace, para decirlo en el cuerpo del correo. */
   expiraEnMinutos: number;
 }
+
+interface ReporteFinancieroParams {
+  nombreIglesia: string;
+  /** Tal cual `Iglesia.logoUrl`, o null. */
+  logoUrl: string | null;
+  /** Solo el primer nombre del integrante, para el saludo. */
+  nombreDestinatario: string;
+  reporte: ReporteFinancieroData;
+  /**
+   * `Integrante.tokenBajaReporte` del destinatario, para el link "dejar de recibir".
+   * Null solo en la vista previa del pastor (ahí el link no apunta a nadie real).
+   */
+  tokenBaja: string | null;
+}
+
+export interface ReporteFinancieroCorreo {
+  asunto: string;
+  html: string;
+}
+
+const formatoCLP = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' });
 
 /** "Ana", "Ana y Beto", "Ana, Beto y Caro" — para listar predicadores en prosa. */
 function unirNombres(nombres: string[]): string {
@@ -305,6 +331,81 @@ export class MailService {
     } catch (error) {
       this.logger.error(`No se pudo enviar el correo de recuperación a ${params.email}`, error);
     }
+  }
+
+  /**
+   * Reporte financiero mensual a la congregación (ver ReporteCongregacionService).
+   * Público para que la vista previa del pastor muestre exactamente el mismo HTML que
+   * va a llegar. Nombres de iglesia y categorías salen escapados: son texto libre del
+   * equipo pastoral y este correo va a casillas externas.
+   */
+  renderReporteFinanciero(params: ReporteFinancieroParams): ReporteFinancieroCorreo {
+    const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    const backendUrl = this.config.get<string>('BACKEND_URL', 'http://localhost:3001');
+    const nombreIglesia = escapeHtml(params.nombreIglesia);
+    const nombre = escapeHtml(params.nombreDestinatario);
+    const mes = nombrePeriodo(params.reporte.periodo);
+    const { ingresos, egresos, balance } = params.reporte.totales;
+    const colorBalance = balance < 0 ? '#dc2626' : '#16a34a';
+    const linkBaja = params.tokenBaja ? `${frontendUrl}/reporte-financiero/baja/${params.tokenBaja}` : '#';
+
+    const html = `
+      <div style="font-family: sans-serif; max-width: 520px; margin: 0 auto; color: #1e293b;">
+        ${this.logoImgTag(params.logoUrl, nombreIglesia, backendUrl)}
+        <h2 style="color: #0369a1; margin-bottom: 4px;">Reporte financiero</h2>
+        <p style="margin-top: 0; color: #64748b; text-transform: capitalize;">${mes}</p>
+        <p>Hola ${nombre},</p>
+        <p>La iglesia <strong>${nombreIglesia}</strong> comparte con su congregación el resumen de sus finanzas de ${mes}.</p>
+        <table style="width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 15px;">
+          <tr><td style="padding: 6px 0;">Ingresos</td><td style="padding: 6px 0; text-align: right;"><strong>${formatoCLP.format(ingresos)}</strong></td></tr>
+          <tr><td style="padding: 6px 0;">Egresos</td><td style="padding: 6px 0; text-align: right;"><strong>${formatoCLP.format(egresos)}</strong></td></tr>
+          <tr style="border-top: 1px solid #e2e8f0;"><td style="padding: 8px 0;">Balance del mes</td><td style="padding: 8px 0; text-align: right; color: ${colorBalance};"><strong>${formatoCLP.format(balance)}</strong></td></tr>
+        </table>
+        ${this.tablaCategoriasHtml('Ingresos por categoría', params.reporte.ingresosPorCategoria)}
+        ${this.tablaCategoriasHtml('Egresos por categoría', params.reporte.egresosPorCategoria)}
+        <p style="margin-top: 24px; font-size: 13px; color: #64748b;">
+          Este reporte muestra solo totales del mes: nunca incluye aportes individuales ni datos personales.
+        </p>
+        <p style="font-size: 13px; color: #64748b;">Equipo pastoral — ${nombreIglesia}</p>
+        <p style="margin-top: 16px; font-size: 12px; color: #94a3b8;">
+          Recibes este correo porque aceptaste recibir el reporte financiero de ${nombreIglesia}.
+          <a href="${linkBaja}" style="color: #94a3b8; text-decoration: underline;">Dejar de recibirlo</a>.
+        </p>
+      </div>
+    `;
+
+    return { asunto: `Reporte financiero de ${mes} — ${params.nombreIglesia}`, html };
+  }
+
+  /**
+   * Envía un reporte ya renderizado. A diferencia del resto de MailService, devuelve si
+   * salió o no (en vez de solo loguear): ReporteCongregacionService cuenta enviados y
+   * fallidos para dejarlos en el historial del pastor. Igual nunca lanza.
+   */
+  async enviarReporteFinanciero(email: string, correo: ReporteFinancieroCorreo): Promise<boolean> {
+    try {
+      await this.provider.sendMail({ to: email, subject: correo.asunto, html: correo.html });
+      return true;
+    } catch (error) {
+      this.logger.error(`No se pudo enviar el reporte financiero a ${email}`, error);
+      return false;
+    }
+  }
+
+  private tablaCategoriasHtml(titulo: string, filas: TotalPorCategoria[]): string {
+    if (filas.length === 0) {
+      return '';
+    }
+    const filasHtml = filas
+      .map(
+        (fila) =>
+          `<tr><td style="padding: 4px 0;">${escapeHtml(fila.categoria)}</td><td style="padding: 4px 0; text-align: right;">${formatoCLP.format(fila.total)}</td></tr>`,
+      )
+      .join('');
+    return `
+      <h3 style="font-size: 15px; color: #334155; margin: 20px 0 4px;">${titulo}</h3>
+      <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #334155;">${filasHtml}</table>
+    `;
   }
 
   /**

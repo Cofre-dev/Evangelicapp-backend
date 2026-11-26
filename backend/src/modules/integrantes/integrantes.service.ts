@@ -111,6 +111,11 @@ export class IntegrantesService {
           run: dto.run,
           miembroDesde: new Date(dto.miembroDesde),
           fotoUrl,
+          // Consentimiento del reporte financiero mensual: solo si la persona marcó el
+          // checkbox. En el camino de duplicado (arriba) NO se actualiza: el endpoint no
+          // verifica identidad, así que nadie puede suscribir a otra persona con su email.
+          aceptaReporteFinanciero: dto.aceptaReporteFinanciero === true,
+          aceptaReporteFinancieroEn: dto.aceptaReporteFinanciero === true ? new Date() : null,
         },
       });
 
@@ -137,6 +142,22 @@ export class IntegrantesService {
     return this.prisma.integrante.findMany({
       where: { iglesiaId },
       orderBy: { createdAt: 'desc' },
+      // Select explícito (no la fila completa) para no exponer `tokenBajaReporte`: con
+      // ese token cualquiera del equipo podría dar de baja a un integrante del reporte.
+      select: {
+        id: true,
+        nombreCompleto: true,
+        email: true,
+        telefono: true,
+        fotoUrl: true,
+        run: true,
+        miembroDesde: true,
+        aceptaReporteFinanciero: true,
+        aceptaReporteFinancieroEn: true,
+        createdAt: true,
+        updatedAt: true,
+        iglesiaId: true,
+      },
     });
   }
 
