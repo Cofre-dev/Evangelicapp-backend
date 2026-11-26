@@ -79,7 +79,7 @@ corre `supabase-js` ni le habla a Supabase directamente, sigue hablando solo con
 
 Autorización vía `JwtAuthGuard` + `RolesGuard` + `@Roles(...)` aplicados por controller. Los módulos delegables suman además `ModuloAccessGuard` + `@Modulo(...)`: MANAGER siempre tiene acceso completo (su acceso es por rol, no por lista), USUARIO solo si el MANAGER se lo otorgó. `Notas` es la excepción — no es un módulo delegable, es exclusivo de MANAGER salvo `GET mis-tareas` y `PATCH :id/marcar-hecha`, abiertos también a USUARIO sin necesitar un módulo otorgado.
 
-Rutas públicas (sin guard — el propio token de un solo uso en la URL/body es la autenticación, no hace falta cuenta en la plataforma): `agenda/predicadores/:token` (confirmación de predicadores por email), `agenda/asistencias/:token` (RSVP de integrantes a un evento), `agenda/convocatoria/:token/*` (página de estado en vivo de la convocatoria de un evento — el `:token` es el `tokenConfirmacion` del propio destinatario, solo resuelve el evento, no expone emails), `integrantes/registro/:qrToken` (alta de un integrante vía el QR propio de la iglesia), y `auth/forgot-password` / `auth/reset-password` (recuperación de contraseña — `forgot-password` responde siempre 200 para no filtrar qué correos están registrados).
+Rutas públicas (sin guard — el propio token de un solo uso en la URL/body es la autenticación, no hace falta cuenta en la plataforma): `agenda/predicadores/:token` (confirmación de predicadores por email), `agenda/asistencias/:token` (RSVP de integrantes a un evento), `agenda/convocatoria/:token/*` (página de estado en vivo de la convocatoria de un evento — el `:token` es el `tokenConfirmacion` del propio destinatario, solo resuelve el evento, no expone emails), `integrantes/registro/:qrToken` (alta de un integrante vía el QR propio de la iglesia), `reporte-financiero/suscripcion/:token/*` (baja/reactivación del reporte financiero mensual desde el link del correo), y `auth/forgot-password` / `auth/reset-password` (recuperación de contraseña — `forgot-password` responde siempre 200 para no filtrar qué correos están registrados).
 
 ### Planes comerciales y facturación
 
@@ -103,7 +103,7 @@ No hay pasarela de pago todavía: el SuperAdmin confirma los pagos a mano (`POST
 | `iglesias` | `/iglesias/*` | Alta de tenant + manager (transaccional, exige plan y fecha de facturación); detalle, cambio de plan, corrección de facturación, marcar pagada y ocultar/mostrar, todo exclusivo de SuperAdmin |
 | `mi-iglesia` | `/mi-iglesia/*` | Datos propios de la iglesia (editar, logo) y módulo de facturación informativo (`/mi-iglesia/facturacion`), exclusivo del MANAGER |
 | `agenda` | `/agenda/eventos/*`, `/agenda/predicadores/*`, `/agenda/asistencias/*`, `/agenda/convocatoria/*` | Calendario de la iglesia; invitación/confirmación de predicadores por email; RSVP masivo a integrantes; página pública de estado en vivo de la convocatoria (predicadores + integrantes) accesible desde el link del correo |
-| `finanzas` | `/finanzas/movimientos/*`, `/finanzas/categorias/*`, `/finanzas/departamentos/*` | Ingresos/egresos, categorías y subdepartamentos propios por iglesia (subdepartamentos solo disponibles en plan Pro), dashboard, export a Excel, audit log |
+| `finanzas` | `/finanzas/movimientos/*`, `/finanzas/categorias/*`, `/finanzas/departamentos/*`, `/finanzas/reporte-congregacion/*` | Ingresos/egresos, categorías y subdepartamentos propios por iglesia (subdepartamentos solo disponibles en plan Pro), dashboard, export a Excel, audit log. Reporte financiero mensual por correo a los integrantes que lo aceptaron (interruptor del MANAGER, vista previa, envío manual, cron el día 1) |
 | `ceremonias` | `/ceremonias/matrimonios/*`, `/ceremonias/bautizos/*`, `/ceremonias/defunciones/*`, `/ceremonias/presentaciones/*` | Libro de ceremonias (folio correlativo por iglesia) + descarga del certificado en PDF |
 | `integrantes` | `/integrantes/*`, `/integrantes/registro/:qrToken` | Censo de congregantes vía QR propio de la iglesia; alta pública por QR, gestión desde el equipo |
 | `notas` | `/notas/*` | Tareas/recordatorios asignables (MANAGER crea/asigna, equipo marca como hechas) |
@@ -155,6 +155,13 @@ login, las 3 rutas públicas por token y el cron. Detalle en `docs/supabase.md` 
 Auth es un proyecto de Supabase **separado y desechable** (`Backend-auth-test`,
 `SUPABASE_AUTH_TEST_*` en `.env`) — nunca el mismo proyecto que Storage/DB. Ver
 [`docs/supabase.md`](./docs/supabase.md) (Fase 7) para el porqué de esa separación.
+
+## Ramas
+
+`staging` **es producción** (Render despliega cada push); no hay entorno de pruebas aparte.
+Las features se integran y prueban en `testing` (ramas `feature/<nombre>` creadas desde ahí) y
+pasan a `staging` siguiendo el orden de
+[`docs/flujo-de-ramas.md`](./docs/flujo-de-ramas.md).
 
 ## Puesta en marcha
 

@@ -2393,3 +2393,355 @@ tocaba). `refresh_tokens` tiene 0 filas (muerta desde Fase 7).
   etc. sin índice de cobertura) y `unused_index` (INFO ×12 — índices sin uso *porque la base casi
   no tiene tráfico todavía*, no tocar). Todo esto: seguimiento a futuro, no bloquea nada. El fix
   de las policies de realtime conviene juntarlo con el guard de schema pendiente para dev local.
+
+## [2026-09-10 11:35] URLs de correo/QR: `FRONTEND_URL`/`BACKEND_URL` de Render pasan al dominio propio (`app.`/`api.evangelicapp.cl`)
+
+**Contexto:** el fundador migró la app a dominio propio — frontend en `https://app.evangelicapp.cl`
+(Worker de Cloudflare `evangelicapp`), API en `https://api.evangelicapp.cl` (custom domain del
+mismo servicio de Render, sigue resolviendo a `evangelicapp-backend.onrender.com`). Reportó que
+"confirmar asistencia desde el correo" y "escanear el QR de integrantes" seguían llevando a la
+URL vieja del Worker (`https://evangelicapp.rojascofrem.workers.dev`).
+
+**Diagnóstico:** no hay ninguna URL del Worker hardcodeada en el código (ni backend ni frontend
+— sólo en `FEATURES.md`/docs históricas). Las dos acciones —y varias más— se arman con la env
+var `FRONTEND_URL` del backend, que en Render seguía apuntando al Worker:
+- `mail.service.ts` — botones "Sí/No voy a asistir" (`/agenda/asistencia/:token`), invitación a
+  predicador (`/predicacion/:token`), "ver quién más confirmó" (`/agenda/convocatoria/:token`),
+  recuperación de contraseña (`/recuperar-contrasena/:token`), botón "Ir a EvangelicApp" de los
+  correos de facturación.
+- `integrantes.service.ts#buildUrlRegistro` — el string que el frontend codifica en el QR
+  (`/integrantes/registro/:qrToken`), devuelto por `GET /integrantes/qr` y `.../qr/regenerar`.
+- `whatsapp.service.ts` — link de la convocatoria por WhatsApp.
+
+Todos abren **páginas del frontend Next.js**, no rutas de la API (la ruta pública de la API es
+`/agenda/asistencias/:token`, plural, y devuelve JSON) → el valor correcto es el dominio del
+frontend, no el de la API. Confirmado con el fundador antes de aplicar.
+
+**Cambio (Render, servicio `Evangelicapp-backend` = `srv-da700lq6iojc7380qmjg`, vía MCP — no es
+cambio de este repo):**
+- `FRONTEND_URL` → `https://app.evangelicapp.cl` (era el Worker).
+- `BACKEND_URL` → `https://api.evangelicapp.cl` (sólo se usa como prefijo de fallback para
+  logos con ruta relativa vieja en el `<img>` de la convocatoria; se alinea de paso).
+- Redeploy disparado automáticamente al guardar las variables.
+
+**Ya estaba OK (verificado con `curl -X OPTIONS` contra `api.evangelicapp.cl`):** `CORS_ORIGIN`
+del backend ya incluye `https://app.evangelicapp.cl` y ya **no** acepta el Origin del Worker.
+
+**Pendiente del frontend (repo aparte) — instrucciones en `prompt.md`:** el bundle del Worker
+todavía se construye con `NEXT_PUBLIC_API_URL = https://evangelicapp-backend.onrender.com`;
+cambiarlo a `https://api.evangelicapp.cl` en Cloudflare Workers Builds y redeploy, más limpieza
+de menciones al Worker en las docs de ese repo.
+
+## [2026-09-26 14:00] Docs de tesis: `docs/tesis-apt.md` como memoria de contexto del Proyecto APT + referencia en `CLAUDE.md`
+
+**Qué:** nuevo archivo `docs/tesis-apt.md` con el contexto de la documentación de tesis
+(Proyecto APT 2026-2): calendario S1–S18 de la Carta Gantt con sus hitos, estructura de la
+carpeta `Desktop/entregables`, convenciones de formato de los documentos Scrum (encabezado,
+numeración HU/T/IMP, formato de Daily y Burndown), sprints con sus HU, la regla para armar las Daily
+desde `FEATURES.md` (reparto desde S5 hasta el último sprint, sin tocar la Fase 1 ya evaluada) y
+el estado actual (documentación al día hasta el 24-09). En `CLAUDE.md` se agrega la sección
+"Tesis / Proyecto APT (leer siempre)", que apunta a ese archivo.
+
+**Para qué:** que cada sesión nueva retome la documentación de tesis sin que el autor tenga que
+volver a explicar el contexto, comparando la fecha de hoy con la Gantt. Sin cambios de código.
+
+## [2026-09-26 18:30] Docs de tesis: re-planificación completa del Proyecto APT (sprints = features reales) + `docs/tesis-apt.md` al día
+
+**Qué (fuera del repo, en `Desktop/entregables`):** a pedido del autor se re-planificó toda la
+documentación Scrum de la tesis, para que los sprints coincidan con lo que realmente se construyó según
+esta bitácora (en orden cronológico, terminando en el Sprint 5). La Gantt original prometía entregables
+que no existen en el código: pruebas con ≥ 70% de cobertura, pasarela de pago, OWASP ZAP y piloto.
+Temas nuevos: Sprint 1 facturación, dashboards y tiempo real · Sprint 2 Supabase Auth y WhatsApp ·
+Sprint 3 RLS y staging · Sprint 4 QA de seguridad, k6 y Realtime · Sprint 5 correo, convocatorias y
+producción. Se regeneraron la Carta Gantt, DOC-01/02/04/05/06/07/08/09/10/11 (con figuras), las 34
+Daily (Fase 1 solo con trabajo de definición), los 8 documentos del Sprint 1, los 5 del Sprint 2 (al
+día 5, 25-09) y la planilla de seguimiento. Respaldo previo en `entregables/_respaldos/2026-09-26/` y
+scripts generadores en `entregables/_herramientas/`.
+
+**Qué (en el repo):** `docs/tesis-apt.md` reescrito con la re-planificación, el mapeo de entradas de
+`FEATURES.md` a cada sprint, el plan de los días restantes del Sprint 2 y el estado al 25-09.
+
+**Para qué:** que la documentación de la tesis sea coherente con el código real y que cualquier sesión
+nueva pueda seguir documentando día a día sin volver a reconstruir el contexto. Sin cambios de código.
+
+## [2026-09-30 00:00] Docs de tesis: Sprint 2 documentado hasta el día 9 (28-09 → 01-10)
+
+**Cambios (carpeta `entregables`, fuera del repo; respaldo previo en `_respaldos/2026-09-30/`):**
+- DOC-12: Daily #35 a #38 (v1.38); el archivo se renombró a `12 - Daily Meeting (S1 a S8).docx`.
+- S2-02 Backlog, S2-03 Scrumboard, S2-04 Burndown y S2-05 Impedimentos pasan a v1.2 con estado al
+  01-10: T2.7, T2.9, T2.10, T2.11 y T2.13 hechas; T2.8 en progreso, bloqueada por IMP-09 (plantilla de
+  WhatsApp en revisión de Meta); IMP-10 (identidad de Supabase Auth cruzada entre bases) resuelto.
+  Burndown 34 → 27 → 21 → 13 → 6 h (ideal 5,5).
+- Planilla de seguimiento al 01-10 (semana S8). `daily.py`, `sprint2.py` y `xlsx.py` actualizados.
+- `docs/tesis-apt.md`: estado y próximo paso (cierre del Sprint 2 el 02-10).
+
+**Para qué:** el autor necesitaba mostrar avances el 01-10 y no podía hacerlo ese día, así que pidió
+explícitamente, solo por esta vez, adelantar la documentación de ese día. Todo sale de las entradas
+de `FEATURES.md` del 14-08 al 16-08, sin inventar features.
+
+## [2026-09-30 00:30] Docs de tesis: borradores de Release, Review y Retro del Sprint 2 + Product Backlog v1.2.1
+
+**Cambios (carpeta `entregables`, fuera del repo; el Product Backlog se respaldó en `_respaldos/2026-09-30/`):**
+- Nuevos S2-06 Release v1.2.0, S2-07 Sprint Review y S2-08 Sprint Retrospective, en **v0.9 (borrador)** con el
+  estado al 01-10 (día 9 de 10), a partir de las plantillas del Sprint 1. Script `_herramientas/sprint2_cierre.py`.
+- Review: HU-31 aceptada, HU-17 pendiente solo de T2.12 y **HU-05 no aceptada** (no cumple la DoD, ya que no hubo
+  envío real de WhatsApp por IMP-09). Vuelve al backlog sin sprint. Velocidad prevista 18/26.
+- Retro: Start/Stop/Continue, repaso de las acciones del Sprint 1 y 4 acciones para el Sprint 3.
+- DOC-09 Product Backlog en v1.2.1. La planilla de seguimiento y `docs/tesis-apt.md` quedan al día.
+
+**Para qué:** el autor pidió avanzar el cierre del sprint hasta lo hecho al 01-10. Como la Review y la Retro
+corresponden al 02-10, se dejaron como borrador (decisión del autor) para cerrarlas ese día sin inventar resultados.
+
+## [2026-10-01 00:00] Docs de tesis: nombre del autor en todos los documentos
+
+**Cambios (carpeta `entregables`, fuera del repo):** el marcador “[Nombre del estudiante]” se reemplazó por
+“Matías Cofré” en todos los `.docx` (encabezados, control de versiones, responsables y participantes) y en los
+scripts de `_herramientas` (`sprint1.py`, `sprintlib.py`, `sprint2_cierre.py`), para que las regeneraciones
+futuras ya salgan con el nombre. Nuevo `_herramientas/nombre.py` hace el reemplazo directo en el XML, conservando
+el formato, y salta los archivos bloqueados. Respaldo previo en `_respaldos/2026-10-01/`. `docs/tesis-apt.md` al día.
+
+**Para qué:** el autor definió su nombre para los entregables del Proyecto APT (era un pendiente abierto).
+
+## [2026-10-08 00:00] Docs de tesis: cierre del Sprint 2, Sprint 3 al día 4 y correcciones de la docente guía
+
+**Cambios (carpeta `entregables`, fuera del repo; respaldo completo previo en `_respaldos/2026-10-08/`):**
+- **Correcciones de la Fase 1** (11 comentarios de la docente guía en el Drive, 05-10), aplicadas solo en los
+  archivos locales como v1.1: DOC-01 (cifras de iglesias con fuente INE/Subsecretaría de Justicia, marcha blanca
+  planificada después del S14, capacidad máxima de 26 pts por sprint), DOC-02 (un rol por persona), DOC-03
+  (módulos ↔ épicas), DOC-04 (el SuperAdmin da soporte), DOC-05 (web responsive, continuidad y respaldo,
+  escalabilidad) y DOC-07 (ID del movimiento financiero). Scripts `correcciones_fase1.py` y `rol.py`.
+- **Roles:** Persona 1 = Product Owner, Persona 2 = Scrum Master, Matías Cofré = Developer, en todos los
+  documentos (autor, Daily, participantes de las Reviews, IMP-06) y en los scripts.
+- **Sprint 2 cerrado al 02-10:** Daily #39; Backlog, Scrumboard, Burndown (final 1 h) e Impedimentos en v1.3;
+  Release v1.2.0, Review (18/26, HU-05 no aceptada) y Retro en v1.0.
+- **Sprint 3 (05-10 → 16-10) al día 4:** carpeta nueva `5. Sprint 3 - RLS multi-tenant y staging (S9-S10)` con
+  Planning, Backlog, Scrumboard, Burndown (55 → 33 h) e Impedimentos (IMP-11 e IMP-12); Daily #40 a #43
+  (DOC-12 renombrado a "S1 a S9", v1.43). Product Backlog v1.4. Script `sprint3.py`.
+- Planilla de seguimiento al 08-10 (S9) y `docs/tesis-apt.md` al día, con el plan de los días que faltan.
+
+**Para qué:** dejar la documentación Scrum al día hasta el 08-10 (pedido del autor) y responder las
+observaciones de la docente guía sobre la Fase 1, sin inventar features: todo sale de `FEATURES.md`.
+
+## [2026-10-08 18:00] Docs de tesis: documentos de la Fase 2 completados
+
+**Cambios (carpeta `entregables/Fase 2`, fuera del repo; respaldo previo en `_respaldos/2026-10-08/Fase 2 (antes de completar)/`):**
+- `2.1` Diario de reflexión (6 respuestas), `2.2` Autoevaluación del avance (niveles marcados, indicadores de calidad
+  y logro estimado del 74%), `2.4` Guía 2 de desarrollo / informe de avance (resumen, objetivos, metodología,
+  evidencias, plan de trabajo con 12 actividades, ajustes, abstract ES/EN y conclusiones y reflexión en inglés) y
+  `2.6` Guía 3 de informe final (borrador al 08-10). Script `_herramientas/fase2.py`.
+- `2.3` y las planillas de evaluación no se modificaron (son de la docente).
+- `docs/tesis-apt.md`: nueva sección "Fase 2".
+
+**Para qué:** dejar listos los entregables del estudiante para el informe de avance (S9–S10), con contenido sacado
+de la documentación Scrum y de `FEATURES.md`.
+
+## [2026-10-15 — jueves] Tesis APT: Sprint 3 documentado hasta el día 9 (Daily #44 a #48)
+
+**Cambios (fuera del repo, en `C:\Users\rojas\Desktop\entregables`; respaldo previo en `_respaldos/2026-10-15/`):**
+- Daily #44 a #48 (09-10 al 15-10) en `daily.py`; el registro único pasa a llamarse
+  `12 - Daily Meeting (S1 a S10).docx` (v1.48).
+- `sprint3.py`: Sprint Backlog, Scrumboard, Burndown e Impedimentos del Sprint 3 al cierre del 15-10 (v1.1).
+  T3.1 a T3.12 hechas; burndown 55 → … → 5 (ideal 5,5); IMP-12 resuelto, nuevos IMP-13 (límite de proyectos de
+  Supabase), IMP-14 (sin Pre-Deploy Command en Render) e IMP-15 (cookies cross-site en móvil, escalado a HU-25).
+  Todo sale de las entradas de esta bitácora del 21-08 al 26-08 (fix `$use` → `$extends`, eliminar MIEMBRO,
+  consentimiento Ley 21.719, staging en Supabase y Render, CORS y bug de RLS en `JwtAuthGuard`).
+- `xlsx.py`: planilla de seguimiento al 15-10 (S10); la fecha de los documentos corregidos de la Fase 1 queda
+  fija en el 08-10, en vez de moverse con cada corrida.
+
+**En este repo:** `docs/tesis-apt.md` actualizado con el estado, el burndown, los impedimentos y el próximo paso
+(cierre del Sprint 3 el 16-10, con la decisión pendiente del autor sobre el criterio 2 de HU-12).
+
+**Para qué:** dejar la documentación Scrum al día para el cierre del Sprint 3 y el informe de avance (20%).
+
+## [2026-10-25 — domingo] Tesis APT: cierre del Sprint 3 y Sprint 4 hasta el día 5 (Daily #49 a #54)
+
+Documentación de tesis puesta al día hasta el viernes 23-10-2026, último día hábil antes de la fecha que dio el
+autor (25-10). Respaldo previo en `entregables/_respaldos/2026-10-25/`. No se tocó código del backend.
+
+**Cierre del Sprint 3 (16-10):** Daily #49; S3-02 a S3-05 en v1.2 (las 14 tareas hechas, burndown en 0); nuevos
+S3-06 Release v1.3.0, S3-07 Review y S3-08 Retro (`_herramientas/sprint3_cierre.py`). Decisión del autor:
+**HU-12 no aceptada**, porque no se registra la fecha de aceptación del consentimiento (criterio 2). Vuelve al
+Product Backlog sin sprint y la velocidad queda en 21/26. Product Backlog v1.5.
+
+**Sprint 4 (19-10 → 23-10):** nueva carpeta `6. Sprint 4 - QA de seguridad, k6 y Realtime (S11-S12)` con S4-01 a
+S4-05 (`_herramientas/sprint4.py`). 14 tareas (55 h) sacadas de las entradas del 27-08, 07-09 y 08-09; día 5 de 10,
+burndown 55 → 26 (ideal 27,5); IMP-16 (cron de facturación sin trigger manual). Daily #50 a #54; el registro pasa a
+`12 - Daily Meeting (S1 a S11).docx` (v1.54). Product Backlog v1.6 y planilla de seguimiento al 23-10.
+
+**Scripts:** `sprintlib.py` suma `product_backlog()`, `PB_HIST` y `clone_docx()`; se actualizaron `sprint3.py`,
+`daily.py` y `xlsx.py`.
+
+**En este repo:** `docs/tesis-apt.md` con el cierre del Sprint 3, el estado del Sprint 4 y el plan de los días 6 a 10.
+
+**Para qué:** dejar la documentación Scrum al día para seguir el Sprint 4 y avanzar hacia el informe final.
+
+## [2026-10-29 — jueves] Tesis APT: Sprint 4 documentado hasta el día 9 (Daily #55 a #58)
+
+Corrección de alcance de la entrada anterior: la documentación tenía que llegar hasta el 29-10, no hasta el 23-10.
+Respaldo previo en `entregables/_respaldos/2026-10-29/`. No se tocó código del backend.
+
+**Sprint 4 (26-10 → 29-10):** S4-02 a S4-05 en v1.1, con T4.1 a T4.12 hechas y T4.14 en progreso. El burndown va
+55 → … → 26 → 21 → 15 → 10 → 4 (ideal 5,5). Nuevo IMP-17: los arreglos de npm audit exigen subir versiones mayores y
+se escala al Product Backlog. HU-21 llega a la Review con el criterio 2 en discusión. Daily #55 a #58 (cierre de
+T4.9 con el bug de RLS en `RealtimeGateway`, npm audit y la migración a Supabase Realtime: Broadcast, token corto,
+policy RLS endurecida). El registro pasa a `12 - Daily Meeting (S1 a S12).docx` (v1.58) y la planilla queda al 29-10.
+Por decisión del autor, la Guía 3 no se tocó (T4.14 queda solo en los documentos Scrum).
+
+**Scripts:** `sprint4.py`, `daily.py` y `xlsx.py` actualizados.
+
+**En este repo:** `docs/tesis-apt.md` con el estado al 29-10 y lo que falta para el cierre del 30-10.
+
+**Para qué:** dejar la documentación Scrum al día al 29-10, lista para cerrar el Sprint 4 el 30-10.
+
+## [2026-10-29 — jueves] Tesis APT: presentación de avance en PowerPoint
+
+Nueva `entregables/EvangelicApp - Presentación de avance (29-10-2026).pptx` (21 diapositivas, estado al 29-10):
+problema y cifras con fuente, módulos, roles y modelo de tenant, diagrama de arquitectura (Cloudflare Workers, Render,
+Supabase), flujo de seguridad en dos capas (guard → contexto de tenant → Prisma → RLS), modelo entidad-relación de las
+20 entidades agrupadas por dominio, diccionario de datos, Scrum y DoD, cronograma de la Carta Gantt, velocidad por
+sprint, burndown del Sprint 4, resultados del QA, impedimentos y próximos pasos. Los diagramas son formas nativas y
+los gráficos, gráficos nativos, así que se pueden editar en PowerPoint. Generador en
+`entregables/_herramientas/presentacion/build.js` (pptxgenjs) y render de QA en `render.py`. No se tocó código del backend.
+
+**En este repo:** `docs/tesis-apt.md` documenta la presentación y cómo regenerarla.
+
+**Para qué:** tener una presentación de avance lista, coherente con DOC-11 y con los documentos Scrum al 29-10.
+
+## [2026-10-29 — jueves] Tesis APT: repo de la tesis sincronizado al 29-10
+
+Se actualizó la carpeta `tesis/` del repo `Cofre-dev/Evangelicapp-capstone` (commit `7958546`, push a `main`) con
+el estado de `entregables` al 29-10: cierre del Sprint 3, Sprint 4 al día 9, Daily #01 a #58, Product Backlog v1.6,
+planilla y presentación de avance. Las copias de `backend/` y `frontend/` ya estaban al día.
+
+**En este repo:** `docs/tesis-apt.md` documenta ese repo y cómo sincronizarlo.
+
+**Para qué:** que el repositorio de entrega de la tesis refleje la documentación vigente.
+
+## [2026-11-11 — miércoles] Tesis APT: cierre del Sprint 4 (v1.4.0) y Sprint 5 documentado hasta el día 9 (Daily #59 a #68)
+
+Solo documentación de tesis (carpeta `entregables`); no se tocó código del backend. Respaldo previo en
+`entregables/_respaldos/2026-11-11/`.
+
+- **Cierre del Sprint 4 (30-10):** Daily #59; S4-02 a S4-05 en v1.2 (burndown final 55 → … → 4 → 0); S4-06 Release
+  v1.4.0, S4-07 Review y S4-08 Retro nuevos (`_herramientas/sprint4_cierre.py`). Velocidad 15/23: **HU-21 no aceptada**
+  (decisión del autor: criterio 2, vulnerabilidades altas de runtime de IMP-17) y vuelve al Product Backlog sin sprint.
+  El retiro de socket.io queda como deuda técnica (en el código real nunca se hizo). Product Backlog v1.7.
+- **Sprint 5 (02-11 → 12-11, día 9 de 10):** carpeta `7. Sprint 5 - Correo, convocatorias y producción (S13-S14)` con
+  S5-01 a S5-05 (`_herramientas/sprint5.py`): 7 HU (23 pts), T5.1–T5.16 (55 h) sacadas de las entradas de `FEATURES.md`
+  del 08-09 al 10-09; burndown 55 → 53 → 47 → 41 → 35 → 30 → 24 → 18 → 12 → 5; impedimentos IMP-18 (Resend sin dominio
+  verificado), IMP-19 (403 CSRF del frontend) e IMP-20 (EMAXCONNSESSION → 6543). Product Backlog v1.8.
+- **Daily:** #59 a #68 en `daily.py`; el registro pasa a `12 - Daily Meeting (S1 a S14).docx` (v1.68).
+- **Planilla** (`xlsx.py`): Sprint 4 completado, Sprint 5 en progreso, calendario al 12-11.
+- `sprintlib.PB_HIST` con v1.7 y v1.8; `docs/tesis-apt.md` al día (estado, Sprint 4 cerrado, Sprint 5 y plan del 13-11).
+- El 12-11 se documentó un día antes (el 11-11), a pedido explícito del autor. Lo hecho el 12-11 (T5.13, T5.14 y 1 h de
+  T5.16) ya está en el burndown y en el backlog, y entra en la Daily #69 del 13-11.
+
+**Para qué sirve:** deja la documentación Scrum al día hasta el penúltimo día del último sprint, lista para cerrar el
+Sprint 5 con la v2.0.0 el 13-11.
+
+## [2026-11-23 — lunes] Tesis APT: cierre del Sprint 5 (v2.0.0), cierre del proyecto (S15) y preparación de la defensa (Daily #69 a #75)
+
+Documentación de tesis en `C:\Users\rojas\Desktop\entregables` (respaldo previo en `_respaldos/2026-11-23/`). No se tocó
+código del backend.
+
+- **Sprint 5 cerrado (13-11):** S5-02 a S5-05 en v1.2 (16/16 tareas, burndown final en 0 h), Release **v2.0.0**, Review y
+  Retro en v1.0 (`sprint5_cierre.py`, nuevo). Velocidad 23/23: el autor aceptó las 7 HU. Product Backlog v1.9 (29 de 32
+  HU, 166 de 187 pts). IMP-15 queda resuelto con el dominio propio.
+- **Cierre del proyecto (S15):** carpeta nueva `8. Cierre del proyecto (S15)` con `C-01 - Retrospectiva del proyecto`
+  (resultados por sprint, gráfico de velocidad, Start/Stop/Continue, acciones y deuda técnica; `cierre_proyecto.py`).
+- **Daily #69 a #75** (13-11 a 23-11); el registro pasa a `12 - Daily Meeting (S1 a S16).docx` (v1.75).
+- **Guía 3 (informe final):** secciones de desarrollo, evidencias e intereses completadas con el cierre (`informe_final.py`).
+- **Planilla de seguimiento** al 23-11 (S16), con la Retrospectiva del proyecto en Completado.
+- **Presentación final** `EvangelicApp - Presentación final (23-11-2026).pptx` (`presentacion/build_final.js`).
+- **Repo de la tesis** sincronizado (commit `543d01a` en `Evangelicapp-capstone`, sin push).
+
+**En este repo:** `docs/tesis-apt.md` al día (Sprint 5 cerrado, cierre del proyecto, estado al 23-11).
+
+**Para qué:** dejar la documentación de la tesis completa hasta el inicio de la S16 (presentación a la comisión).
+
+## [2026-11-24 — martes 22:30] Docs: pendientes de producto (reporte financiero y red de alianzas)
+
+Conversación de diseño, sin cambios de código.
+
+- **Nuevo `docs/pendientes-producto.md`:** deja registradas dos ideas que el fundador validó pero que no se implementan
+  todavía:
+  1. **Reporte financiero voluntario a la congregación:** interruptor del pastor, envío mensual por correo a los
+     `Integrante`, solo datos agregados (nunca aportes por persona), idempotencia con `EnvioReporte`, consentimiento y
+     baja.
+  2. **Red de alianzas entre iglesias como módulo gratuito:** registro autoservicio sin suscripción, plan `GRATUITO`
+     dentro de la misma plataforma, verificación de iglesias antes de pedir donaciones en dinero, convocatorias con metas
+     y "¡Yo te ayudo!", notificaciones multicanal con outbox, búsqueda por comuna normalizada y tablas nuevas con sus
+     propias policies RLS (sin relajar las existentes).
+- Cada idea incluye el diseño propuesto, los cambios que exige en el modelo actual, las fases y las decisiones abiertas.
+
+**Para qué sirve:** que las ideas no se pierdan y que, cuando se retomen, se parta del diseño ya conversado y de la
+lista de decisiones por confirmar.
+
+## [2026-11-26 — jueves] Docs: las features pendientes no se documentan en la tesis
+
+- **`docs/pendientes-producto.md`:** aviso de que el reporte financiero y la red de alianzas **no se documentan** todavía,
+  y orden recomendado (partir por el reporte financiero).
+- **`docs/tesis-apt.md`:** las dos features quedan explícitamente fuera de la documentación de la tesis (Daily, backlog,
+  sprints, informe, presentación) hasta que el autor lo pida.
+
+**Para qué sirve:** evitar que una sesión futura las agregue por error a los entregables de la tesis.
+
+## [2026-11-26 — jueves] Reporte financiero mensual a la congregación (backend)
+
+Feature 1 de `docs/pendientes-producto.md`. **No se documenta en la tesis** (decisión del autor).
+
+**Base de datos** (migración `20261126120000_add_reporte_financiero_congregacion`, **sin aplicar todavía** en ningún
+entorno):
+- `iglesias`: `reporteFinancieroActivo` (interruptor, false por defecto), `reporteFinancieroActivadoEn`,
+  `reporteFinancieroActivadoPorId`.
+- `categorias_financieras.ocultaEnReporte`: la categoría se suma en "Otros ingresos/egresos" en vez de mostrarse por
+  nombre (los totales no cambian).
+- `integrantes`: `aceptaReporteFinanciero` (consentimiento opt-in), `aceptaReporteFinancieroEn`, `tokenBajaReporte`
+  (link de baja, se crea al primer envío).
+- Tabla nueva `envios_reporte_financiero` con `@@unique([iglesiaId, periodo])` (un mes se envía una sola vez),
+  snapshot de lo enviado y conteo de enviados/fallidos. RLS `tenant_isolation` estándar + GRANT a `app_runtime`.
+
+**Código** (`src/modules/finanzas/reporte-congregacion/`):
+- `ReporteCongregacionController` (solo MANAGER): `GET/PATCH /finanzas/reporte-congregacion` (configuración e
+  interruptor), `PUT …/categorias-ocultas`, `GET …/vista-previa` (números + HTML exacto del correo), `POST …/enviar`
+  (202, envío en segundo plano; 409 si el mes ya salió), `GET …/envios` (historial).
+- `ReporteCongregacionSuscripcionController` (público por token, con throttle): `GET
+  /reporte-financiero/suscripcion/:token`, `POST …/baja`, `POST …/reactivar`. Exentos de CSRF en `app.module.ts`.
+- `ReporteCongregacionCron`: todos los días a las 10:00 (America/Santiago), del día 1 al 7, envía el reporte del mes
+  anterior a las iglesias ACTIVAS con el interruptor encendido desde antes de empezar el mes. Bajo `runAsService`.
+- `reporte-congregacion.util.ts` (lógica pura, con 9 tests): períodos `YYYY-MM`, armado del reporte, agrupación en
+  "Otros". El reporte solo lleva totales por categoría, nunca descripciones de movimientos ni montos individuales.
+- `MailService`: `renderReporteFinanciero` (también lo usa la vista previa) y `enviarReporteFinanciero` (devuelve si
+  salió). Envío por lotes de 2 correos por segundo por el rate limit del proveedor.
+- Integrantes: checkbox opcional `aceptaReporteFinanciero` en el formulario público del QR (no se actualiza en el camino
+  de duplicado, porque el endpoint no verifica identidad); `GET /integrantes` pasa a un select explícito que expone el
+  consentimiento y nunca `tokenBajaReporte`.
+- `tenant-context.ts` y `README.md` al día con los nuevos puntos de bypass y las rutas.
+
+**Frontend:** instrucciones detalladas en `prompt.md` (raíz del repo, ignorado por git).
+
+**Verificación:** `tsc`, `eslint`/`prettier`, `jest` (27/27) y `nest build` pasan. **No se probó contra una base real**
+(Docker no estaba corriendo y el `.env` apunta al proyecto retirado), ni se aplicó la migración en ningún entorno.
+
+**Para qué sirve:** que el pastor pueda compartir voluntariamente, con trazabilidad y consentimiento de los
+destinatarios, un resumen financiero mensual con su congregación.
+
+## [2026-11-26 — jueves] Docs: flujo de ramas
+
+- **Nuevo `docs/flujo-de-ramas.md`:** qué rama es qué en backend y frontend (`staging` = producción en los dos, `main`
+  = copia, `features`/`testing`/`features-local` = viejas y sin uso), flujo para una feature nueva
+  (`feature/<nombre>` desde `staging`), orden de pase a producción (migración → backend → frontend → smoke test →
+  igualar `main`) y pendientes (CI en `staging`, entorno de pruebas real, borrar ramas viejas).
+- `CLAUDE.md` y `README.md` apuntan a ese documento.
+
+**Para qué sirve:** que al volver al proyecto después de un tiempo quede claro dónde se trabaja y que un push a
+`staging` es un despliegue a producción.
+
+## [2026-11-26 — jueves] Git: `testing` pasa a ser la rama de integración
+
+- Rama `testing` (backend) actualizada a `staging` (`09d68772`) por fast-forward, local y en `origin`. No tenía commits
+  propios, así que no se perdió nada.
+- Nuevo flujo en `docs/flujo-de-ramas.md`: `feature/<nombre>` (desde `testing`) → `testing` → `staging` (producción) →
+  `main`, con hotfix como excepción. `CLAUDE.md` y `README.md` al día.
+
+**Para qué sirve:** tener una rama donde juntar y probar las features nuevas antes de que lleguen a producción.

@@ -2,6 +2,20 @@
 
 Este archivo lo lee Claude automáticamente al iniciar cualquier sesión en este repositorio. Contiene el **por qué** del proyecto (negocio/producto). Para el **cómo** técnico (stack, arquitectura, setup), ver [`README.md`](./README.md). Para el historial de cambios, ver [`FEATURES.md`](./FEATURES.md).
 
+## Tesis / Proyecto APT (leer siempre)
+
+Este proyecto también es la tesis (Proyecto APT 2026-2) del autor. **Antes de trabajar en la
+documentación de tesis (carpeta `C:\Users\rojas\Desktop\entregables`), lee
+[`docs/tesis-apt.md`](./docs/tesis-apt.md)**: tiene el calendario de la Carta Gantt, las
+convenciones de los documentos Scrum, la regla para armar las Daily desde `FEATURES.md` y el
+estado actual. Actualiza ese archivo cada vez que avance la documentación.
+
+## Ramas (leer antes de hacer commit o push)
+
+**La rama `staging` es producción** (en este repo y en el frontend): cada push se despliega solo.
+Flujo: `feature/<nombre>` (desde `testing`) → `testing` (integración y pruebas, en local por
+ahora) → `staging` (solo después de aplicar las migraciones en producción) → `main` (copia). Detalle completo en [`docs/flujo-de-ramas.md`](./docs/flujo-de-ramas.md).
+
 ## Bitácora obligatoria
 
 Cada vez que Claude haga una modificación en este repositorio (código, config, docs), debe agregar una entrada nueva al final de `FEATURES.md` con fecha y hora, los cambios realizados y para qué sirven. Es un archivo de solo agregar: nunca borrar ni reescribir entradas anteriores. Esto aplica dentro de la misma sesión también — si se hacen varios cambios de una sesión, se puede agrupar en una sola entrada al terminar, pero no se debe cerrar una tarea de modificación sin dejarla registrada.
