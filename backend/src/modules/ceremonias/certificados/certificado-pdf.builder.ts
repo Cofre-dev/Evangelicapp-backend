@@ -210,7 +210,7 @@ function dibujarCertificado(
     .font('Helvetica')
     .fontSize(8)
     .fillColor(COLOR_CAPTION)
-    .text('EvangelicApp', width - margenExterior - 120, height - margenExterior - 20, {
+    .text('Evangelicapp', width - margenExterior - 120, height - margenExterior - 20, {
       width: 100,
       align: 'right',
     });

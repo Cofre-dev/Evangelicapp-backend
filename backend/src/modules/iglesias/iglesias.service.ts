@@ -1,4 +1,10 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   EstadoIglesia,
   EstadoTarea,
@@ -19,12 +25,14 @@ import { translateUniqueConstraintError } from '../../common/utils/translate-uni
 import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
 import { AuthService } from '../auth/auth.service';
+import { MailService } from '../mail/mail.service';
 import { REALTIME_EVENTS } from '../realtime/realtime-rooms.util';
 import { RealtimeService } from '../realtime/realtime.service';
 import { sincronizarPerfilRed } from '../red/perfil-red.sync';
 import { ActualizarFacturacionDto } from './dto/actualizar-facturacion.dto';
 import { CambiarPlanDto } from './dto/cambiar-plan.dto';
 import { CreateIglesiaDto } from './dto/create-iglesia.dto';
+import { EliminarIglesiaDto } from './dto/eliminar-iglesia.dto';
 import { LOGO_RESIZE, resolverExtensionLogo } from './logo-upload.config';
 
 /** Días entre la fecha de adquisición del plan y la primera facturación (ver CreateIglesiaDto). */
@@ -96,11 +104,14 @@ const DETALLE_SELECT = {
 
 @Injectable()
 export class IglesiasService {
+  private readonly logger = new Logger(IglesiasService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly supabaseStorage: SupabaseStorageService,
     private readonly authService: AuthService,
     private readonly realtimeService: RealtimeService,
+    private readonly mailService: MailService,
   ) {}
 
   /**
@@ -485,6 +496,77 @@ export class IglesiasService {
 
     await this.emitIglesiaActualizada(id);
     return this.findOne(id);
+  }
+
+  /**
+   * Borrado PERMANENTE de una iglesia con todos sus datos (equipo, integrantes,
+   * finanzas, agenda, certificados, red...). Irreversible: el SuperAdmin tiene que
+   * tipear el nombre exacto de la iglesia y dar un motivo, que va en el correo de
+   * despedida al pastor.
+   *
+   * Casi todo cae por `onDelete: Cascade` desde `Iglesia`, salvo tres FKs RESTRICT
+   * que trabarían el DELETE según el orden en que Postgres resuelva la cascada
+   * (movimientos→categoría, movimientos→departamento, notas→usuario creador): esas
+   * filas se borran explícitamente primero, en la misma transacción.
+   *
+   * El correo sale DESPUÉS del borrado (si la transacción falla, no se avisa de algo
+   * que no pasó) y es best-effort, igual que la limpieza de archivos en Storage.
+   */
+  async eliminar(id: string, dto: EliminarIglesiaDto, superAdminId: string) {
+    const iglesia = await this.prisma.iglesia.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        nombre: true,
+        logoUrl: true,
+        usuarios: { select: { email: true, nombre: true, rol: true, fotoUrl: true } },
+        integrantes: { where: { fotoUrl: { not: null } }, select: { fotoUrl: true } },
+      },
+    });
+
+    if (!iglesia) {
+      throw new NotFoundException('Iglesia no encontrada');
+    }
+
+    if (dto.confirmacionNombre.trim() !== iglesia.nombre.trim()) {
+      throw new BadRequestException('El nombre ingresado no coincide con el de la iglesia.');
+    }
+
+    await this.prisma.withTenantTransaction(
+      async (tx) => {
+        await tx.movimientoFinanciero.deleteMany({ where: { iglesiaId: id } });
+        await tx.nota.deleteMany({ where: { iglesiaId: id } });
+        await tx.iglesia.delete({ where: { id } });
+      },
+      { timeout: 60_000 },
+    );
+
+    const motivo = dto.motivo.trim();
+    const pastores = iglesia.usuarios.filter((u) => u.rol === Rol.MANAGER);
+    let correosEnviados = 0;
+    for (const pastor of pastores) {
+      const enviado = await this.mailService.enviarIglesiaEliminada({
+        email: pastor.email,
+        nombre: pastor.nombre,
+        nombreIglesia: iglesia.nombre,
+        motivo,
+      });
+      if (enviado) correosEnviados += 1;
+    }
+
+    const archivos = [
+      iglesia.logoUrl,
+      ...iglesia.usuarios.map((u) => u.fotoUrl),
+      ...iglesia.integrantes.map((i) => i.fotoUrl),
+    ].filter((url): url is string => Boolean(url && url.startsWith('http')));
+    await Promise.all(archivos.map((url) => this.supabaseStorage.removeByPublicUrl(url)));
+
+    // Deja rastro en los logs de quién borró qué y por qué (no queda nada en la BD).
+    this.logger.warn(
+      `Iglesia "${iglesia.nombre}" (${id}) eliminada permanentemente por el SuperAdmin ${superAdminId}. Motivo: ${motivo}`,
+    );
+
+    return { ok: true, correosEnviados };
   }
 
   private async requireExists(id: string): Promise<void> {

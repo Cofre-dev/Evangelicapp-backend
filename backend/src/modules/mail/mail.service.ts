@@ -160,6 +160,7 @@ export class MailService {
             </p>
             ${estadoHtml}
             <p style="margin-top: 24px; font-size: 13px; color: #64748b;">Equipo pastoral — ${nombreIglesia}</p>
+            ${this.firmaTimoteo()}
           </div>
         `,
       });
@@ -222,6 +223,7 @@ export class MailService {
             </p>
             ${estadoHtml}
             <p style="margin-top: 24px; font-size: 13px; color: #64748b;">${firmante} — ${nombreIglesia}</p>
+            ${this.firmaTimoteo()}
           </div>
         `,
       });
@@ -248,14 +250,16 @@ export class MailService {
         subject: `Recordatorio: tu facturación vence en 7 días — ${params.nombreIglesia}`,
         html: `
           <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
+            ${this.cabeceraEvangelicapp()}
             <h2 style="color: #0369a1;">${nombreIglesia}</h2>
-            <p>Te escribimos para avisarte que la próxima facturación de tu cuenta en EvangelicApp vence el <strong>${fechaTexto}</strong> (en 7 días).</p>
+            <p>Te escribimos para avisarte que la próxima facturación de tu cuenta en Evangelicapp vence el <strong>${fechaTexto}</strong> (en 7 días).</p>
             <p>No es necesario hacer nada todavía — este es solo un recordatorio para que lo tengas presente.</p>
             <p style="margin-top: 24px;">
               <a href="${frontendUrl}" style="background:#38bdf8;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
-                Ir a EvangelicApp
+                Ir a Evangelicapp
               </a>
             </p>
+            ${this.firmaTimoteo()}
           </div>
         `,
       });
@@ -281,17 +285,19 @@ export class MailService {
         subject: `Tu facturación está vencida — ${params.nombreIglesia}`,
         html: `
           <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
+            ${this.cabeceraEvangelicapp()}
             <h2 style="color: #dc2626;">${nombreIglesia}</h2>
             <p>Tu facturación venció hace <strong>${diasTexto}</strong>. ${
               params.pasaAGratuito
                 ? 'Favor ponerte al día lo antes posible: si la mora llega a 3 días, tu iglesia pasa al plan gratuito y pierde los módulos de pago (tus datos no se borran).'
-                : 'Favor ponerte al día lo antes posible para evitar la suspensión del acceso de tu equipo a EvangelicApp.'
+                : 'Favor ponerte al día lo antes posible para evitar la suspensión del acceso de tu equipo a Evangelicapp.'
             }</p>
             <p style="margin-top: 24px;">
               <a href="${frontendUrl}" style="background:#dc2626;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
-                Ir a EvangelicApp
+                Ir a Evangelicapp
               </a>
             </p>
+            ${this.firmaTimoteo()}
           </div>
         `,
       });
@@ -316,12 +322,13 @@ export class MailService {
     try {
       await this.provider.sendMail({
         to: params.email,
-        subject: 'Restablece tu contraseña — EvangelicApp',
+        subject: 'Restablece tu contraseña — Evangelicapp',
         html: `
           <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
+            ${this.cabeceraEvangelicapp()}
             <h2 style="color: #0369a1;">Restablecer contraseña</h2>
             <p>Hola ${nombre},</p>
-            <p>Recibimos una solicitud para restablecer la contraseña de tu cuenta en EvangelicApp. Hacé clic en el botón para elegir una nueva:</p>
+            <p>Recibimos una solicitud para restablecer la contraseña de tu cuenta en Evangelicapp. Haz clic en el botón para elegir una nueva:</p>
             <p style="margin-top: 20px;">
               <a href="${link}" style="background:#0369a1;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
                 Restablecer mi contraseña
@@ -329,8 +336,9 @@ export class MailService {
             </p>
             <p style="margin-top: 20px; font-size: 13px; color: #64748b;">
               El enlace vence en ${params.expiraEnMinutos} minutos y sirve una sola vez.
-              Si no pediste esto, ignorá este correo — tu contraseña no cambia hasta que uses el enlace.
+              Si no pediste esto, ignora este correo — tu contraseña no cambia hasta que uses el enlace.
             </p>
+            ${this.firmaTimoteo()}
           </div>
         `,
       });
@@ -350,19 +358,60 @@ export class MailService {
         subject: `Tu iglesia pasó al plan gratuito — ${params.nombreIglesia}`,
         html: `
           <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
+            ${this.cabeceraEvangelicapp()}
             <h2 style="color: #dc2626;">${nombreIglesia}</h2>
             <p>Como la mensualidad lleva varios días vencida, tu iglesia pasó al <strong>plan gratuito</strong>.</p>
             <p>Tus datos siguen guardados y puedes seguir usando la Red de iglesias. Agenda, finanzas, ceremonias, integrantes y notas vuelven a estar disponibles apenas se confirme el pago.</p>
             <p style="margin-top: 24px;">
               <a href="${frontendUrl}" style="background:#0369a1;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
-                Ir a EvangelicApp
+                Ir a Evangelicapp
               </a>
             </p>
+            ${this.firmaTimoteo()}
           </div>
         `,
       });
     } catch (error) {
       this.logger.error(`No se pudo enviar el aviso de plan degradado a ${params.email}`, error);
+    }
+  }
+
+  /**
+   * Despedida al pastor cuando el SuperAdmin borra la iglesia de forma permanente
+   * (ver IglesiasService#eliminar). Se envía después del borrado; devuelve si salió.
+   * El motivo lo escribe el SuperAdmin y se escapa igual que el resto del texto libre.
+   */
+  async enviarIglesiaEliminada(params: {
+    email: string;
+    nombre: string;
+    nombreIglesia: string;
+    motivo: string;
+  }): Promise<boolean> {
+    const nombre = escapeHtml(params.nombre);
+    const nombreIglesia = escapeHtml(params.nombreIglesia);
+    const motivo = escapeHtml(params.motivo).replace(/\n/g, '<br />');
+    const contacto = this.config.get<string>('CONTACTO_EMAIL', 'contacto@evangelicapp.cl');
+
+    try {
+      await this.provider.sendMail({
+        to: params.email,
+        subject: `${params.nombreIglesia} ya no forma parte de Evangelicapp`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
+            ${this.cabeceraEvangelicapp()}
+            <h2 style="color: #334155;">Lo sentimos, ${nombre}</h2>
+            <p><strong>${nombreIglesia}</strong> ya no forma parte de Evangelicapp. Su cuenta y todos sus datos fueron eliminados de la plataforma.</p>
+            <p style="margin: 16px 0 4px; font-size: 14px; color: #64748b;">Motivo:</p>
+            <blockquote style="margin: 0; padding: 12px 16px; background: #f1f5f9; border-left: 4px solid #94a3b8; border-radius: 4px; color: #334155;">${motivo}</blockquote>
+            <p style="margin-top: 20px;">Gracias por el tiempo que fueron parte de Evangelicapp. Si crees que se trata de un error o quieres conversarlo, escríbenos a <a href="mailto:${contacto}" style="color:#0369a1;">${contacto}</a>.</p>
+            ${this.firmaTimoteo()}
+          </div>
+        `,
+      });
+      return true;
+    } catch (error) {
+      this.logger.error(`No se pudo enviar el aviso de iglesia eliminada a ${params.email}`, error);
+      return false;
     }
   }
 
@@ -382,12 +431,13 @@ export class MailService {
     try {
       await this.provider.sendMail({
         to: params.email,
-        subject: 'Confirma el registro de tu iglesia — EvangelicApp',
+        subject: 'Confirma el registro de tu iglesia — Evangelicapp',
         html: `
           <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
+            ${this.cabeceraEvangelicapp()}
             <h2 style="color: #0369a1;">¡Bienvenido a la Red de iglesias!</h2>
             <p>Hola ${nombre},</p>
-            <p>Recibimos el registro de <strong>${nombreIglesia}</strong> en EvangelicApp. Para activar la cuenta, confirma tu correo:</p>
+            <p>Recibimos el registro de <strong>${nombreIglesia}</strong> en Evangelicapp. Para activar la cuenta, confirma tu correo:</p>
             <p style="margin-top: 20px;">
               <a href="${link}" style="background:#0369a1;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
                 Confirmar mi correo
@@ -396,6 +446,7 @@ export class MailService {
             <p style="margin-top: 20px; font-size: 13px; color: #64748b;">
               El enlace vence en ${params.expiraEnHoras} horas. Si no registraste una iglesia, ignora este correo: no se creará ninguna cuenta.
             </p>
+            ${this.firmaTimoteo()}
           </div>
         `,
       });
@@ -428,18 +479,20 @@ export class MailService {
         subject: `${params.titulo} — Red de iglesias`,
         html: `
           <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
-            <p style="color: #64748b; font-size: 13px; margin-bottom: 4px;">Red de iglesias · EvangelicApp</p>
+            ${this.cabeceraEvangelicapp()}
+            <p style="color: #64748b; font-size: 13px; margin-bottom: 4px;">Red de iglesias · Evangelicapp</p>
             <h2 style="color: #0369a1; margin-top: 0;">${titulo}</h2>
             <p>Hola ${nombre},</p>
             <p>${mensaje}</p>
             <p style="margin-top: 20px;">
               <a href="${link}" style="background:#0369a1;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
-                Ver en EvangelicApp
+                Ver en Evangelicapp
               </a>
             </p>
             <p style="margin-top: 20px; font-size: 12px; color: #94a3b8;">
               Puedes dejar de recibir estos correos desde tu perfil, en "Notificaciones de la red".
             </p>
+            ${this.firmaTimoteo()}
           </div>
         `,
       });
@@ -488,6 +541,7 @@ export class MailService {
           Recibes este correo porque aceptaste recibir el reporte financiero de ${nombreIglesia}.
           <a href="${linkBaja}" style="color: #94a3b8; text-decoration: underline;">Dejar de recibirlo</a>.
         </p>
+        ${this.firmaTimoteo()}
       </div>
     `;
 
@@ -507,6 +561,37 @@ export class MailService {
       this.logger.error(`No se pudo enviar el reporte financiero a ${email}`, error);
       return false;
     }
+  }
+
+  /**
+   * Logo de Evangelicapp para correos. Lo sirve el frontend como estático
+   * (`frontend/public/email/logo-evangelicapp.png`); `EMAIL_LOGO_URL` permite
+   * apuntarlo a otro lado (ej. un bucket) sin tocar código.
+   */
+  private logoEvangelicappUrl(): string {
+    const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    return this.config.get<string>('EMAIL_LOGO_URL') || `${frontendUrl}/email/logo-evangelicapp.png`;
+  }
+
+  /** Logo de Evangelicapp centrado, para la cabecera de los correos de la plataforma. */
+  private cabeceraEvangelicapp(): string {
+    return `<div style="text-align: center; margin-bottom: 20px;">
+              <img src="${this.logoEvangelicappUrl()}" alt="Evangelicapp" width="96" style="width: 96px; height: auto; border: 0;" />
+            </div>`;
+  }
+
+  /** Pie de firma común: lo "firma" Timoteo, el asistente de Evangelicapp. */
+  private firmaTimoteo(): string {
+    return `<table role="presentation" cellpadding="0" cellspacing="0" style="width: 100%; margin-top: 28px; border-top: 1px solid #e2e8f0;">
+              <tr>
+                <td style="width: 34px; padding-top: 12px; vertical-align: middle;">
+                  <img src="${this.logoEvangelicappUrl()}" alt="" width="26" style="width: 26px; height: auto; border: 0;" />
+                </td>
+                <td style="padding-top: 12px; vertical-align: middle; font-size: 12px; color: #94a3b8;">
+                  Timoteo, el asistente de Evangelicapp, envió este correo.
+                </td>
+              </tr>
+            </table>`;
   }
 
   private tablaCategoriasHtml(titulo: string, filas: TotalPorCategoria[]): string {

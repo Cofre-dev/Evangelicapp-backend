@@ -22,6 +22,7 @@ import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { ActualizarFacturacionDto } from './dto/actualizar-facturacion.dto';
 import { CambiarPlanDto } from './dto/cambiar-plan.dto';
 import { CreateIglesiaDto } from './dto/create-iglesia.dto';
+import { EliminarIglesiaDto } from './dto/eliminar-iglesia.dto';
 import { VerificarIglesiaDto } from './dto/verificar-iglesia.dto';
 import { IglesiasService } from './iglesias.service';
 import { logoMulterOptions } from './logo-upload.config';
@@ -107,5 +108,16 @@ export class IglesiasController {
   @Patch(':id/mostrar')
   mostrar(@Param('id') id: string) {
     return this.iglesiasService.mostrar(id);
+  }
+
+  /**
+   * Borrado PERMANENTE (irreversible) de la iglesia y todos sus datos. POST y no
+   * DELETE porque lleva body (motivo + confirmación del nombre) y algunos proxies
+   * descartan el body de un DELETE.
+   */
+  @Post(':id/eliminar')
+  @HttpCode(HttpStatus.OK)
+  eliminar(@CurrentUser() user: JwtPayload, @Param('id') id: string, @Body() dto: EliminarIglesiaDto) {
+    return this.iglesiasService.eliminar(id, dto, user.sub);
   }
 }
