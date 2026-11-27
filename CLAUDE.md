@@ -61,6 +61,15 @@ Cada **iglesia** es un tenant independiente y aislado — sus datos (eventos, mo
 3. El pastor invita a su propio equipo — Tesorero y/o Secretaria — quienes ven solo su iglesia.
 4. El SuperAdmin tiene un dashboard con visibilidad cruzada (todas las iglesias, distribución por región) para operar la plataforma a nivel nacional, pero **no** ve el detalle financiero/operativo interno de cada iglesia.
 
+**Plan GRATUITO y Red de iglesias (backend desde 2026-11-27, ver [`docs/red-de-iglesias.md`](./docs/red-de-iglesias.md)):**
+además del alta por el SuperAdmin, cualquier iglesia puede **registrarse sola** (con confirmación por
+correo) en el plan `GRATUITO`, que solo da acceso a la **Red de iglesias** (directorio por comuna,
+llamados de ayuda con "¡Yo te ayudo!", alianzas, notificaciones). Todo lo demás es de pago y lo
+bloquea `JwtAuthGuard` por defecto (`@PermitidoEnPlanGratuito` marca lo que sí entra). Una iglesia de
+pago que cae en **mora baja a GRATUITO** (no se bloquea) y recupera su plan al pagar. La red es la
+primera funcionalidad que cruza datos entre iglesias: solo a través de sus tablas propias con RLS,
+nunca relajando el aislamiento de las demás.
+
 Roles y para qué sirve cada uno en términos de negocio:
 
 | Rol | Quién es | Qué hace en la plataforma |

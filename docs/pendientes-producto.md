@@ -55,6 +55,13 @@ reporte de las finanzas de la iglesia a sus congregantes.
 
 ## 2. Red de alianzas entre iglesias (módulo gratuito)
 
+> **Estado (2026-11-27): backend implementado y probado en local** (ver `FEATURES.md` y el
+> diseño final en [`docs/red-de-iglesias.md`](./red-de-iglesias.md), que reemplaza al borrador de
+> abajo). Falta: el frontend (instrucciones en `prompt.md`), aplicar la migración
+> `20261127120000_red_de_iglesias` en producción y configurar `TURNSTILE_SECRET_KEY` en Render.
+> Decisiones del fundador: plan gratuito con límites, mora → plan gratuito, sin donaciones en
+> dinero por ahora, la red y el feed son lo gratuito y todo lo demás es de pago.
+
 **Qué es:** un módulo para que las iglesias se conecten y se pidan ayuda para acciones
 sociales u operativos (voluntarios, donaciones, insumos). **No es una copia de Facebook:** la
 unidad central es la **necesidad con metas concretas**, no el post (sin likes ni comentarios).

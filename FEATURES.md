@@ -2745,3 +2745,41 @@ destinatarios, un resumen financiero mensual con su congregación.
   `main`, con hotfix como excepción. `CLAUDE.md` y `README.md` al día.
 
 **Para qué sirve:** tener una rama donde juntar y probar las features nuevas antes de que lleguen a producción.
+
+## [2026-11-27 — viernes] Red de iglesias + plan GRATUITO (backend)
+
+Feature 2 de `docs/pendientes-producto.md`. **No se documenta en la tesis.** Diseño completo en
+`docs/red-de-iglesias.md`; instrucciones para el frontend en `prompt.md`.
+
+**Decisiones del fundador:** plan gratuito con límites; mora → plan gratuito (en vez de bloqueo); sin donaciones en
+dinero por ahora; la red y su feed son lo gratuito y todo lo demás es de pago; verificación manual del SuperAdmin.
+
+- **Plan GRATUITO** (`PlanIglesia.GRATUITO`, 1 usuario, 2 llamados abiertos). `JwtAuthGuard` bloquea por defecto toda
+  ruta de una iglesia gratuita que no lleve `@PermitidoEnPlanGratuito` (403 `REQUIERE_PLAN_PAGO`). `proximaFacturacion`
+  pasa a opcional; `estadoFacturacionDe` devuelve `facturacion: null` en gratuito.
+- **Mora → gratuito:** `FacturacionRecordatoriosCron` degrada a los 3 días de mora (`IglesiasService#degradarPorMora`,
+  guarda `planPrevioMora`, avisa por campana y correo); `marcarPagada` restaura el plan. `cambiarPlan` desde gratuito
+  "contrata" (facturación a 30 días, pago en historial, verificada). El cron del reporte financiero ignora las gratuitas.
+- **Registro autoservicio:** `POST /red/registro` (throttle, Turnstile si hay `TURNSTILE_SECRET_KEY`, link por correo) y
+  `POST /red/registro/confirmar/:token` (crea iglesia GRATUITO + pastor MANAGER + perfil de red). Región/comuna
+  validadas contra `common/constants/chile-regiones.ts` (también en `PATCH /mi-iglesia`).
+- **Módulo `red`:** perfil público y directorio, feed por alcance, llamados de ayuda con necesidades y metas,
+  "¡Yo te ayudo!" con paso automático a CUBIERTO, alianzas (y llamados solo para aliadas), reportes y moderación del
+  SuperAdmin (`/red/moderacion/*`), verificación (`PATCH /iglesias/:id/verificacion`, filtros `verificada`/`origen`).
+- **Notificaciones:** tabla `notificaciones` + `/notificaciones/*` (campana, leídas, preferencia de correo), evento
+  realtime `notificacion:nueva` y `red:llamado-actualizado`, correos por lotes (`common/utils/en-lotes.ts`).
+- **Migración `20261127120000_red_de_iglesias`** (sin aplicar en producción): 8 tablas nuevas con RLS propio (ninguna
+  policy existente se modificó), columnas nuevas en `iglesias`/`usuarios`, backfill (iglesias existentes verificadas,
+  perfil fuera del directorio).
+- **Arreglo de un bug existente en `JwtAuthGuard`:** la iglesia del usuario se leía antes de fijar `iglesiaId` en el
+  contexto de RLS y llegaba siempre `null`, así que el bloqueo por `SUSPENDIDA` no se aplicaba por request (solo en el
+  login). Ahora se consulta después de fijar el contexto.
+- `.env.example` (`TURNSTILE_SECRET_KEY`), `README.md`, `CLAUDE.md` (modelo de tenant) y `docs/pendientes-producto.md`
+  al día.
+
+**Verificación:** `tsc`, `eslint`, `prettier` y `jest` (34 tests) pasan. Prueba de punta a punta contra Postgres local
+con las 22 migraciones, API como `app_runtime` (RLS real) y un emisor de tokens de Supabase falso: **105/105** casos
+(incluye intentos de cruzar datos entre iglesias directo en SQL), más la corrida del cron (degradación por mora y
+restauración al pagar) y el bloqueo por SUSPENDIDA. Sin probar: correos reales, Turnstile real y Supabase Realtime.
+No se pudo reactivar el proyecto de Supabase Auth (`Backend-auth-test`): la cuenta llegó al límite de 2 proyectos
+gratuitos activos.
