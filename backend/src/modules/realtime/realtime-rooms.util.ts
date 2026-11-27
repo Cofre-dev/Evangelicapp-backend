@@ -43,4 +43,12 @@ export const REALTIME_EVENTS = {
   INTEGRANTE_REGISTRADO: 'integrante:registrado',
   /** Un integrante convocado a un evento confirmó/rechazó su asistencia (RSVP por token). */
   ASISTENCIA_RESPONDIDA: 'asistencia:respondida',
+  /**
+   * Hay notificaciones nuevas para el equipo de esta iglesia (Red de iglesias, plan
+   * degradado, verificación). Payload mínimo `{ tipo }`: el frontend vuelve a pedir
+   * `GET /notificaciones/no-leidas` en vez de confiar en el contenido del evento.
+   */
+  NOTIFICACION_NUEVA: 'notificacion:nueva',
+  /** Cambió un llamado de ayuda propio (nuevo apoyo, apoyo cancelado, quedó cubierto). */
+  LLAMADO_ACTUALIZADO: 'red:llamado-actualizado',
 } as const;

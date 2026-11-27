@@ -1,11 +1,19 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { EstadoIglesia, EstadoTarea, PlanIglesia, Prisma, Rol } from '@prisma/client';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  EstadoIglesia,
+  EstadoTarea,
+  OrigenIglesia,
+  PlanIglesia,
+  Prisma,
+  Rol,
+  TipoNotificacion,
+} from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomUUID } from 'crypto';
 import { BCRYPT_ROUNDS } from '../../common/constants/bcrypt';
-import { PLAN_LIMITS } from '../../common/constants/plan';
+import { PLAN_LIMITS, esPlanDePago } from '../../common/constants/plan';
 import { bucketPorMes, inicioVentanaMensual } from '../../common/utils/bucket-por-mes.util';
-import { calcularEstadoFacturacion, sumarDias, sumarUnMes } from '../../common/utils/calcular-facturacion';
+import { estadoFacturacionDe, sumarDias, sumarUnMes } from '../../common/utils/calcular-facturacion';
 import { generateTemporaryPassword } from '../../common/utils/generate-temporary-password';
 import { translateUniqueConstraintError } from '../../common/utils/translate-unique-constraint-error';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -13,6 +21,7 @@ import { SupabaseStorageService } from '../../supabase/supabase-storage.service'
 import { AuthService } from '../auth/auth.service';
 import { REALTIME_EVENTS } from '../realtime/realtime-rooms.util';
 import { RealtimeService } from '../realtime/realtime.service';
+import { sincronizarPerfilRed } from '../red/perfil-red.sync';
 import { ActualizarFacturacionDto } from './dto/actualizar-facturacion.dto';
 import { CambiarPlanDto } from './dto/cambiar-plan.dto';
 import { CreateIglesiaDto } from './dto/create-iglesia.dto';
@@ -29,6 +38,8 @@ export interface FiltrosIglesias {
   estado?: EstadoIglesia;
   plan?: PlanIglesia;
   region?: string;
+  verificada?: boolean;
+  origen?: OrigenIglesia;
 }
 
 const LISTADO_SELECT = {
@@ -39,6 +50,9 @@ const LISTADO_SELECT = {
   logoUrl: true,
   estado: true,
   plan: true,
+  planPrevioMora: true,
+  origen: true,
+  verificada: true,
   proximaFacturacion: true,
   createdAt: true,
   usuarios: {
@@ -57,6 +71,10 @@ const DETALLE_SELECT = {
   logoUrl: true,
   estado: true,
   plan: true,
+  planPrevioMora: true,
+  origen: true,
+  verificada: true,
+  verificadaEn: true,
   proximaFacturacion: true,
   ultimoPagoAt: true,
   visitantesPromedio: true,
@@ -122,6 +140,9 @@ export class IglesiasService {
             plan: dto.plan,
             proximaFacturacion,
             logoUrl,
+            // Alta por el SuperAdmin = contacto comercial: nace verificada en la red.
+            verificada: true,
+            verificadaEn: new Date(),
           },
         });
 
@@ -144,6 +165,8 @@ export class IglesiasService {
           data: { iglesiaId: iglesia.id, fecha: fechaAdquisicionPlan, registradoPorId: superAdminId },
         });
 
+        await sincronizarPerfilRed(tx, iglesia.id);
+
         return { iglesia, pastor };
       });
 
@@ -164,6 +187,8 @@ export class IglesiasService {
       ...(filtros.estado ? { estado: filtros.estado } : {}),
       ...(filtros.plan ? { plan: filtros.plan } : {}),
       ...(filtros.region ? { region: filtros.region } : {}),
+      ...(filtros.verificada !== undefined ? { verificada: filtros.verificada } : {}),
+      ...(filtros.origen ? { origen: filtros.origen } : {}),
     };
 
     const iglesias = await this.prisma.iglesia.findMany({
@@ -180,7 +205,8 @@ export class IglesiasService {
     return {
       ...resto,
       pastor: usuarios[0] ?? null,
-      facturacion: calcularEstadoFacturacion(proximaFacturacion),
+      // null en plan GRATUITO (no paga, no tiene semáforo ni mora).
+      facturacion: estadoFacturacionDe(iglesia.plan, proximaFacturacion),
     };
   }
 
@@ -214,13 +240,131 @@ export class IglesiasService {
     return this.buildDetalle(iglesia);
   }
 
-  /** Cambiar de plan nunca borra ni desactiva datos existentes — solo mueve los topes hacia delante. */
-  async cambiarPlan(id: string, dto: CambiarPlanDto) {
+  /**
+   * Cambiar de plan nunca borra ni desactiva datos existentes — solo mueve los topes
+   * hacia delante (y, desde GRATUITO, desbloquea los módulos de pago).
+   *
+   * Pasar de GRATUITO a un plan de pago es "contratar": si la iglesia no tiene una fecha
+   * de facturación vigente se fija hoy + 30 días con su registro en el historial de
+   * pagos (igual que el alta), y queda verificada en la red.
+   */
+  async cambiarPlan(id: string, dto: CambiarPlanDto, superAdminId: string) {
+    const iglesia = await this.prisma.iglesia.findUnique({
+      where: { id },
+      select: { plan: true, proximaFacturacion: true },
+    });
+    if (!iglesia) {
+      throw new NotFoundException('Iglesia no encontrada');
+    }
+
+    const contrata = iglesia.plan === PlanIglesia.GRATUITO && esPlanDePago(dto.plan);
+    const ahora = new Date();
+
+    await this.prisma.withTenantTransaction(async (tx) => {
+      await tx.iglesia.update({
+        where: { id },
+        data: {
+          plan: dto.plan,
+          // Un cambio manual de plan cierra cualquier degradación por mora pendiente.
+          planPrevioMora: null,
+          ...(contrata
+            ? {
+                proximaFacturacion: sumarDias(ahora, DIAS_PRIMERA_FACTURACION),
+                ultimoPagoAt: ahora,
+                verificada: true,
+                verificadaEn: ahora,
+              }
+            : {}),
+        },
+      });
+      if (contrata) {
+        await tx.pagoIglesia.create({ data: { iglesiaId: id, fecha: ahora, registradoPorId: superAdminId } });
+      }
+      await sincronizarPerfilRed(tx, id);
+    });
+
+    await this.emitIglesiaActualizada(id);
+    return this.findOne(id);
+  }
+
+  /** Insignia "verificada" de la red (SuperAdmin). Ver docs/red-de-iglesias.md. */
+  async verificar(id: string, verificada: boolean) {
     await this.requireExists(id);
 
-    await this.prisma.iglesia.update({ where: { id }, data: { plan: dto.plan } });
+    await this.prisma.withTenantTransaction(async (tx) => {
+      await tx.iglesia.update({
+        where: { id },
+        data: { verificada, verificadaEn: verificada ? new Date() : null },
+      });
+      await sincronizarPerfilRed(tx, id);
+    });
 
+    if (verificada) {
+      await this.notificarAlEquipo(id, {
+        tipo: TipoNotificacion.IGLESIA_VERIFICADA,
+        titulo: 'Tu iglesia fue verificada',
+        mensaje: 'Tu iglesia ahora muestra la insignia de verificada en la Red de iglesias.',
+        url: '/red/perfil',
+      });
+    }
+
+    await this.emitIglesiaActualizada(id);
     return this.findOne(id);
+  }
+
+  /**
+   * Mora → plan GRATUITO (decisión del fundador, 2026-11-26): en vez de bloquear el
+   * acceso, la iglesia conserva sus datos y la Red de iglesias, pero pierde los módulos
+   * de pago hasta ponerse al día. Guarda el plan que tenía para restaurarlo en
+   * `marcarPagada`. La llama FacturacionRecordatoriosCron al cumplirse DIAS_GRACIA_MORA.
+   * Devuelve false si no correspondía (ya gratuita, o sin mora suficiente).
+   */
+  async degradarPorMora(id: string): Promise<boolean> {
+    const iglesia = await this.prisma.iglesia.findUnique({
+      where: { id },
+      select: { plan: true, proximaFacturacion: true },
+    });
+    if (!iglesia) {
+      return false;
+    }
+    const facturacion = estadoFacturacionDe(iglesia.plan, iglesia.proximaFacturacion);
+    if (!facturacion?.puedeOcultar) {
+      return false;
+    }
+
+    await this.prisma.iglesia.update({
+      where: { id },
+      data: { planPrevioMora: iglesia.plan, plan: PlanIglesia.GRATUITO, estado: EstadoIglesia.ACTIVA },
+    });
+
+    await this.notificarAlEquipo(id, {
+      tipo: TipoNotificacion.PLAN_DEGRADADO,
+      titulo: 'Tu iglesia pasó al plan gratuito',
+      mensaje:
+        'La mensualidad lleva varios días vencida. Tus datos siguen guardados: al ponerte al día recuperas tu plan y todos los módulos.',
+      url: '/facturacion',
+    });
+
+    await this.emitIglesiaActualizada(id);
+    return true;
+  }
+
+  /** Aviso en la campana a todo el equipo activo de una iglesia (corre como SuperAdmin o servicio). */
+  private async notificarAlEquipo(
+    iglesiaId: string,
+    aviso: { tipo: TipoNotificacion; titulo: string; mensaje: string; url: string },
+  ): Promise<void> {
+    const usuarios = await this.prisma.usuario.findMany({
+      where: { iglesiaId, activo: true },
+      select: { id: true },
+    });
+    if (usuarios.length === 0) {
+      return;
+    }
+    await this.prisma.notificacion.createMany({
+      data: usuarios.map((u) => ({ ...aviso, usuarioId: u.id, iglesiaId })),
+    });
+    this.realtimeService.emitAIglesia(iglesiaId, REALTIME_EVENTS.NOTIFICACION_NUEVA, { tipo: aviso.tipo });
   }
 
   /**
@@ -251,22 +395,33 @@ export class IglesiasService {
   async marcarPagada(id: string, superAdminId: string) {
     const iglesia = await this.prisma.iglesia.findUnique({
       where: { id },
-      select: { proximaFacturacion: true },
+      select: { proximaFacturacion: true, plan: true, planPrevioMora: true },
     });
 
     if (!iglesia) {
       throw new NotFoundException('Iglesia no encontrada');
     }
 
+    // Degradada por mora: el pago le devuelve su plan anterior. Como pasó días sin
+    // módulos de pago, el nuevo ciclo se cuenta desde hoy (no desde la fecha vencida).
+    const restaura = iglesia.planPrevioMora;
+    if (iglesia.plan === PlanIglesia.GRATUITO && !restaura) {
+      throw new BadRequestException(
+        'La iglesia está en el plan gratuito y no tiene un plan que restaurar: usa "Cambiar plan" para contratarle uno.',
+      );
+    }
+
     const fechaPago = new Date();
+    const base = restaura || !iglesia.proximaFacturacion ? fechaPago : iglesia.proximaFacturacion;
 
     await this.prisma.withTenantTransaction(async (tx) => {
       await tx.iglesia.update({
         where: { id },
         data: {
-          proximaFacturacion: sumarUnMes(iglesia.proximaFacturacion),
+          proximaFacturacion: sumarUnMes(base),
           ultimoPagoAt: fechaPago,
           estado: EstadoIglesia.ACTIVA,
+          ...(restaura ? { plan: restaura, planPrevioMora: null } : {}),
         },
       });
       await tx.pagoIglesia.create({
@@ -302,14 +457,14 @@ export class IglesiasService {
   async ocultar(id: string) {
     const iglesia = await this.prisma.iglesia.findUnique({
       where: { id },
-      select: { proximaFacturacion: true },
+      select: { proximaFacturacion: true, plan: true },
     });
 
     if (!iglesia) {
       throw new NotFoundException('Iglesia no encontrada');
     }
 
-    const { puedeOcultar } = calcularEstadoFacturacion(iglesia.proximaFacturacion);
+    const puedeOcultar = estadoFacturacionDe(iglesia.plan, iglesia.proximaFacturacion)?.puedeOcultar ?? false;
     if (!puedeOcultar) {
       throw new ForbiddenException(
         'Solo se puede ocultar una iglesia con 3 o más días de mora en su facturación.',
@@ -404,7 +559,7 @@ export class IglesiasService {
       plan,
       pastor: usuarios.find((u) => u.rol === Rol.MANAGER) ?? null,
       equipo: usuarios.filter((u) => u.rol !== Rol.MANAGER),
-      facturacion: calcularEstadoFacturacion(proximaFacturacion),
+      facturacion: estadoFacturacionDe(plan, proximaFacturacion),
       limites: {
         usuarios: { actuales: usuariosActuales, maximo: limitesPlan.maxUsuarios },
         departamentosFinancieros: {

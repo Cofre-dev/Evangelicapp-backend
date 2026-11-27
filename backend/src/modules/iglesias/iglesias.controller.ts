@@ -13,7 +13,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { EstadoIglesia, PlanIglesia, Rol } from '@prisma/client';
+import { EstadoIglesia, OrigenIglesia, PlanIglesia, Rol } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -22,6 +22,7 @@ import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
 import { ActualizarFacturacionDto } from './dto/actualizar-facturacion.dto';
 import { CambiarPlanDto } from './dto/cambiar-plan.dto';
 import { CreateIglesiaDto } from './dto/create-iglesia.dto';
+import { VerificarIglesiaDto } from './dto/verificar-iglesia.dto';
 import { IglesiasService } from './iglesias.service';
 import { logoMulterOptions } from './logo-upload.config';
 
@@ -48,8 +49,18 @@ export class IglesiasController {
     @Query('estado') estado?: EstadoIglesia,
     @Query('plan') plan?: PlanIglesia,
     @Query('region') region?: string,
+    @Query('verificada') verificada?: string,
+    @Query('origen') origen?: OrigenIglesia,
   ) {
-    return this.iglesiasService.findAll({ search, estado, plan, region });
+    return this.iglesiasService.findAll({
+      search,
+      estado,
+      plan,
+      region,
+      // ?verificada=false&origen=AUTOSERVICIO = la cola de iglesias por verificar.
+      verificada: verificada === undefined ? undefined : verificada === 'true',
+      origen,
+    });
   }
 
   @Get(':id')
@@ -63,8 +74,14 @@ export class IglesiasController {
   }
 
   @Patch(':id/plan')
-  cambiarPlan(@Param('id') id: string, @Body() dto: CambiarPlanDto) {
-    return this.iglesiasService.cambiarPlan(id, dto);
+  cambiarPlan(@CurrentUser() user: JwtPayload, @Param('id') id: string, @Body() dto: CambiarPlanDto) {
+    return this.iglesiasService.cambiarPlan(id, dto, user.sub);
+  }
+
+  /** Insignia "verificada" de la Red de iglesias: `{ verificada: true | false }`. */
+  @Patch(':id/verificacion')
+  verificar(@Param('id') id: string, @Body() dto: VerificarIglesiaDto) {
+    return this.iglesiasService.verificar(id, dto.verificada);
   }
 
   @Patch(':id/facturacion')

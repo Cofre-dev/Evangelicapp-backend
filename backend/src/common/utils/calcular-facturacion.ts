@@ -1,3 +1,4 @@
+import { PlanIglesia } from '@prisma/client';
 import { DIAS_GRACIA_MORA, UMBRAL_AMARILLO_DIAS, UMBRAL_ROJO_DIAS } from '../constants/facturacion';
 
 export type ColorFacturacion = 'VERDE' | 'AMARILLO' | 'ROJO';
@@ -55,6 +56,22 @@ export function calcularEstadoFacturacion(
     diasEnMora,
     puedeOcultar: diasEnMora >= DIAS_GRACIA_MORA,
   };
+}
+
+/**
+ * Semáforo de facturación según el plan: null para las iglesias GRATUITO (no pagan, no
+ * tienen semáforo ni mora aunque conserven una `proximaFacturacion` de cuando pagaban)
+ * y para las que nunca tuvieron fecha de facturación.
+ */
+export function estadoFacturacionDe(
+  plan: PlanIglesia,
+  proximaFacturacion: Date | null,
+  ahora: Date = new Date(),
+): EstadoFacturacion | null {
+  if (plan === PlanIglesia.GRATUITO || !proximaFacturacion) {
+    return null;
+  }
+  return calcularEstadoFacturacion(proximaFacturacion, ahora);
 }
 
 /**

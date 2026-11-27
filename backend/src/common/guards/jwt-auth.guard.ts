@@ -5,12 +5,15 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { EstadoIglesia, Rol } from '@prisma/client';
+import { Reflector } from '@nestjs/core';
+import { EstadoIglesia, PlanIglesia, Rol } from '@prisma/client';
 import { Request } from 'express';
 import { ACCESS_TOKEN_COOKIE } from '../constants/auth-cookies';
 import { MUST_CHANGE_PASSWORD_ALLOWLIST } from '../constants/must-change-password-allowlist';
 import { updateTenantContext } from '../context/tenant-context';
+import { PERMITIDO_EN_PLAN_GRATUITO_KEY } from '../decorators/permitido-en-plan-gratuito.decorator';
 import { IglesiaSuspendidaException } from '../exceptions/iglesia-suspendida.exception';
+import { RequierePlanPagoException } from '../exceptions/requiere-plan-pago.exception';
 import { calcularEstadoFacturacion } from '../utils/calcular-facturacion';
 import { JwtPayload } from '../interfaces/jwt-payload.interface';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -45,6 +48,7 @@ export class JwtAuthGuard implements CanActivate {
   constructor(
     private readonly verifier: SupabaseJwtVerifierService,
     private readonly prisma: PrismaService,
+    private readonly reflector: Reflector,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -72,7 +76,6 @@ export class JwtAuthGuard implements CanActivate {
         iglesiaId: true,
         activo: true,
         mustChangePassword: true,
-        iglesia: { select: { estado: true, proximaFacturacion: true } },
       },
     });
 
@@ -84,9 +87,37 @@ export class JwtAuthGuard implements CanActivate {
     // llame) ya queda scoped a la iglesia real del usuario para efectos de RLS.
     updateTenantContext({ iglesiaId: usuario.iglesiaId, rol: usuario.rol });
 
-    if (usuario.iglesia?.estado === EstadoIglesia.SUSPENDIDA) {
-      const { diasEnMora } = calcularEstadoFacturacion(usuario.iglesia.proximaFacturacion);
-      throw new IglesiaSuspendidaException(diasEnMora);
+    // Query separada, ya con iglesiaId en el contexto: como `include` del findUnique de
+    // arriba corría con el contexto viejo (solo usuarioId) y la policy de `iglesias` la
+    // devolvía null SIEMPRE — mismo problema que se documenta abajo para accesos_modulo.
+    // Efecto real que tenía: ni el bloqueo por SUSPENDIDA ni (desde 2026-11-27) el del
+    // plan GRATUITO se aplicaban por request. Encontrado probando la Red de iglesias
+    // contra una base con RLS activa (app_runtime).
+    const iglesia = usuario.iglesiaId
+      ? await this.prisma.iglesia.findUnique({
+          where: { id: usuario.iglesiaId },
+          select: { estado: true, proximaFacturacion: true, plan: true },
+        })
+      : null;
+
+    if (iglesia?.estado === EstadoIglesia.SUSPENDIDA) {
+      const { proximaFacturacion } = iglesia;
+      throw new IglesiaSuspendidaException(
+        proximaFacturacion ? calcularEstadoFacturacion(proximaFacturacion).diasEnMora : 0,
+      );
+    }
+
+    // Plan GRATUITO: solo las rutas marcadas con @PermitidoEnPlanGratuito (default-deny,
+    // ver ese decorador). Se evalúa con el plan fresco de la base en cada request: una
+    // iglesia que paga (o que cae en mora) cambia de acceso al instante, sin re-login.
+    if (iglesia?.plan === PlanIglesia.GRATUITO) {
+      const permitido = this.reflector.getAllAndOverride<boolean>(PERMITIDO_EN_PLAN_GRATUITO_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ]);
+      if (!permitido) {
+        throw new RequierePlanPagoException();
+      }
     }
 
     if (usuario.mustChangePassword && !MUST_CHANGE_PASSWORD_ALLOWLIST.has(request.path)) {
@@ -116,6 +147,7 @@ export class JwtAuthGuard implements CanActivate {
       rol: usuario.rol,
       iglesiaId: usuario.iglesiaId,
       modulos,
+      plan: iglesia?.plan ?? null,
     };
 
     (request as Request & { user: JwtPayload }).user = payload;

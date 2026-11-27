@@ -1,4 +1,4 @@
-import { ModuloSistema, Rol } from '@prisma/client';
+import { ModuloSistema, PlanIglesia, Rol } from '@prisma/client';
 
 /**
  * Forma del access token. `iglesiaId` es null únicamente para SUPER_ADMIN.
@@ -15,4 +15,6 @@ export interface JwtPayload {
   rol: Rol;
   iglesiaId: string | null;
   modulos: ModuloSistema[];
+  /** Plan actual de la iglesia (leído fresco en cada request); null para SUPER_ADMIN. */
+  plan: PlanIglesia | null;
 }

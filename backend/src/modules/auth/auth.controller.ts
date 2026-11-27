@@ -1,3 +1,4 @@
+import { PermitidoEnPlanGratuito } from '../../common/decorators/permitido-en-plan-gratuito.decorator';
 import {
   BadRequestException,
   Body,
@@ -48,6 +49,8 @@ function readCookie(req: Request, name: string): string | undefined {
 }
 
 @Controller('auth')
+// Plan GRATUITO: también disponible (ver @PermitidoEnPlanGratuito).
+@PermitidoEnPlanGratuito()
 export class AuthController {
   constructor(
     private readonly authService: AuthService,

@@ -280,7 +280,7 @@ export class MailService {
         html: `
           <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
             <h2 style="color: #dc2626;">${nombreIglesia}</h2>
-            <p>Tu facturación venció hace <strong>${diasTexto}</strong>. Favor ponerte al día lo antes posible para evitar la suspensión del acceso de tu equipo a EvangelicApp.</p>
+            <p>Tu facturación venció hace <strong>${diasTexto}</strong>. Favor ponerte al día lo antes posible: si la mora llega a 3 días, tu iglesia pasa al plan gratuito y pierde los módulos de pago (tus datos no se borran).</p>
             <p style="margin-top: 24px;">
               <a href="${frontendUrl}" style="background:#dc2626;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
                 Ir a EvangelicApp
@@ -330,6 +330,117 @@ export class MailService {
       });
     } catch (error) {
       this.logger.error(`No se pudo enviar el correo de recuperación a ${params.email}`, error);
+    }
+  }
+
+  /** Aviso al pastor de que su iglesia bajó al plan GRATUITO por mora (ver FacturacionRecordatoriosCron). */
+  async enviarPlanDegradado(params: { email: string; nombreIglesia: string }): Promise<void> {
+    const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    const nombreIglesia = escapeHtml(params.nombreIglesia);
+
+    try {
+      await this.provider.sendMail({
+        to: params.email,
+        subject: `Tu iglesia pasó al plan gratuito — ${params.nombreIglesia}`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
+            <h2 style="color: #dc2626;">${nombreIglesia}</h2>
+            <p>Como la mensualidad lleva varios días vencida, tu iglesia pasó al <strong>plan gratuito</strong>.</p>
+            <p>Tus datos siguen guardados y puedes seguir usando la Red de iglesias. Agenda, finanzas, ceremonias, integrantes y notas vuelven a estar disponibles apenas se confirme el pago.</p>
+            <p style="margin-top: 24px;">
+              <a href="${frontendUrl}" style="background:#0369a1;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
+                Ir a EvangelicApp
+              </a>
+            </p>
+          </div>
+        `,
+      });
+    } catch (error) {
+      this.logger.error(`No se pudo enviar el aviso de plan degradado a ${params.email}`, error);
+    }
+  }
+
+  /** Link para confirmar el registro autoservicio de una iglesia (ver RedRegistroService). */
+  async enviarConfirmacionRegistro(params: {
+    email: string;
+    nombre: string;
+    nombreIglesia: string;
+    token: string;
+    expiraEnHoras: number;
+  }): Promise<void> {
+    const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    const link = `${frontendUrl}/registro/confirmar/${params.token}`;
+    const nombre = escapeHtml(params.nombre);
+    const nombreIglesia = escapeHtml(params.nombreIglesia);
+
+    try {
+      await this.provider.sendMail({
+        to: params.email,
+        subject: 'Confirma el registro de tu iglesia — EvangelicApp',
+        html: `
+          <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
+            <h2 style="color: #0369a1;">¡Bienvenido a la Red de iglesias!</h2>
+            <p>Hola ${nombre},</p>
+            <p>Recibimos el registro de <strong>${nombreIglesia}</strong> en EvangelicApp. Para activar la cuenta, confirma tu correo:</p>
+            <p style="margin-top: 20px;">
+              <a href="${link}" style="background:#0369a1;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
+                Confirmar mi correo
+              </a>
+            </p>
+            <p style="margin-top: 20px; font-size: 13px; color: #64748b;">
+              El enlace vence en ${params.expiraEnHoras} horas. Si no registraste una iglesia, ignora este correo: no se creará ninguna cuenta.
+            </p>
+          </div>
+        `,
+      });
+    } catch (error) {
+      this.logger.error(`No se pudo enviar la confirmación de registro a ${params.email}`, error);
+    }
+  }
+
+  /**
+   * Aviso por correo de la Red de iglesias (llamado nuevo en la zona, apoyo recibido,
+   * solicitud de alianza...). Mismo texto que la notificación de la campana. Devuelve si
+   * salió, igual que enviarReporteFinanciero (se envía por lotes, ver enviarEnLotes).
+   */
+  async enviarAvisoRed(params: {
+    email: string;
+    nombre: string;
+    titulo: string;
+    mensaje: string;
+    url: string | null;
+  }): Promise<boolean> {
+    const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    const titulo = escapeHtml(params.titulo);
+    const mensaje = escapeHtml(params.mensaje);
+    const nombre = escapeHtml(params.nombre);
+    const link = `${frontendUrl}${params.url ?? '/red'}`;
+
+    try {
+      await this.provider.sendMail({
+        to: params.email,
+        subject: `${params.titulo} — Red de iglesias`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
+            <p style="color: #64748b; font-size: 13px; margin-bottom: 4px;">Red de iglesias · EvangelicApp</p>
+            <h2 style="color: #0369a1; margin-top: 0;">${titulo}</h2>
+            <p>Hola ${nombre},</p>
+            <p>${mensaje}</p>
+            <p style="margin-top: 20px;">
+              <a href="${link}" style="background:#0369a1;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
+                Ver en EvangelicApp
+              </a>
+            </p>
+            <p style="margin-top: 20px; font-size: 12px; color: #94a3b8;">
+              Puedes dejar de recibir estos correos desde tu perfil, en "Notificaciones de la red".
+            </p>
+          </div>
+        `,
+      });
+      return true;
+    } catch (error) {
+      this.logger.error(`No se pudo enviar el aviso de la red a ${params.email}`, error);
+      return false;
     }
   }
 

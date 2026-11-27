@@ -1,8 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { Rol } from '@prisma/client';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { EstadoLlamado, Rol } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PLAN_LIMITS } from '../../common/constants/plan';
-import { calcularEstadoFacturacion } from '../../common/utils/calcular-facturacion';
+import { resolverComuna } from '../../common/constants/chile-regiones';
+import { estadoFacturacionDe } from '../../common/utils/calcular-facturacion';
+import { sincronizarPerfilRed } from '../red/perfil-red.sync';
 import { LOGO_RESIZE, resolverExtensionLogo } from '../iglesias/logo-upload.config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SupabaseStorageService } from '../../supabase/supabase-storage.service';
@@ -16,6 +18,8 @@ const MI_IGLESIA_SELECT = {
   direccion: true,
   logoUrl: true,
   estado: true,
+  plan: true,
+  verificada: true,
   visitantesPromedio: true,
   createdAt: true,
   updatedAt: true,
@@ -24,7 +28,7 @@ const MI_IGLESIA_SELECT = {
 /** Además de MI_IGLESIA_SELECT: los campos de plan/facturación, solo relevantes para el módulo de facturación. */
 const MI_IGLESIA_FACTURACION_SELECT = {
   ...MI_IGLESIA_SELECT,
-  plan: true,
+  planPrevioMora: true,
   proximaFacturacion: true,
   ultimoPagoAt: true,
 } as const;
@@ -66,11 +70,14 @@ export class MiIglesiaService {
 
     const { plan, proximaFacturacion, ...iglesiaData } = iglesia;
 
-    const [usuariosActuales, departamentosActuales] = await Promise.all([
+    const [usuariosActuales, departamentosActuales, llamadosAbiertos] = await Promise.all([
       this.prisma.usuario.count({
         where: { iglesiaId, activo: true, rol: { in: [Rol.MANAGER, Rol.USUARIO] } },
       }),
       this.prisma.departamentoFinanciero.count({ where: { iglesiaId, activo: true } }),
+      this.prisma.llamadoAyuda.count({
+        where: { iglesiaId, estado: { in: [EstadoLlamado.ABIERTO, EstadoLlamado.CUBIERTO] } },
+      }),
     ]);
 
     const limitesPlan = PLAN_LIMITS[plan];
@@ -78,30 +85,48 @@ export class MiIglesiaService {
     return {
       ...iglesiaData,
       plan,
-      facturacion: calcularEstadoFacturacion(proximaFacturacion),
+      // null en plan GRATUITO: no paga, no hay semáforo. Si `planPrevioMora` viene con
+      // valor, está en gratuito por mora y ese es el plan que recupera al pagar.
+      facturacion: estadoFacturacionDe(plan, proximaFacturacion),
       limites: {
         usuarios: { actuales: usuariosActuales, maximo: limitesPlan.maxUsuarios },
         departamentosFinancieros: {
           actuales: departamentosActuales,
           maximo: limitesPlan.maxDepartamentosFinancieros,
         },
+        llamadosAbiertos: { actuales: llamadosAbiertos, maximo: limitesPlan.maxLlamadosAbiertos },
       },
     };
   }
 
   /** Corrige datos ingresados mal en el alta (nombre, comuna, región, dirección). */
   async update(iglesiaId: string, dto: UpdateMiIglesiaDto) {
-    await this.findOne(iglesiaId);
+    const actual = await this.findOne(iglesiaId);
 
-    return this.prisma.iglesia.update({
-      where: { id: iglesiaId },
-      data: {
-        nombre: dto.nombre,
-        comuna: dto.comuna,
-        region: dto.region,
-        direccion: dto.direccion,
-      },
-      select: MI_IGLESIA_SELECT,
+    // La red hace match por comuna exacta: si se cambia región o comuna, el par tiene que
+    // existir en el catálogo (ver chile-regiones.ts) y se guarda con el nombre canónico.
+    let ubicacion: { region: string; comuna: string } | undefined;
+    if (dto.region !== undefined || dto.comuna !== undefined) {
+      const resuelta = resolverComuna(dto.region ?? actual.region, dto.comuna ?? actual.comuna);
+      if (!resuelta) {
+        throw new BadRequestException('La comuna no existe o no pertenece a la región indicada');
+      }
+      ubicacion = resuelta;
+    }
+
+    return this.prisma.withTenantTransaction(async (tx) => {
+      const iglesia = await tx.iglesia.update({
+        where: { id: iglesiaId },
+        data: {
+          nombre: dto.nombre,
+          comuna: ubicacion?.comuna,
+          region: ubicacion?.region,
+          direccion: dto.direccion,
+        },
+        select: MI_IGLESIA_SELECT,
+      });
+      await sincronizarPerfilRed(tx, iglesiaId);
+      return iglesia;
     });
   }
 
@@ -123,10 +148,12 @@ export class MiIglesiaService {
       await this.supabaseStorage.removeByPublicUrl(iglesia.logoUrl);
     }
 
-    return this.prisma.iglesia.update({
+    const actualizada = await this.prisma.iglesia.update({
       where: { id: iglesiaId },
       data: { logoUrl },
       select: MI_IGLESIA_SELECT,
     });
+    await sincronizarPerfilRed(this.prisma, iglesiaId);
+    return actualizada;
   }
 }

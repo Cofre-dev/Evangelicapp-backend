@@ -1,3 +1,4 @@
+import { PermitidoEnPlanGratuito } from '../../common/decorators/permitido-en-plan-gratuito.decorator';
 import { Controller, Get, UseGuards } from '@nestjs/common';
 import { Throttle, minutes } from '@nestjs/throttler';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -17,6 +18,8 @@ import { RealtimeTokenService } from './realtime-token.service';
  * partir del rol/iglesiaId del JWT, nunca de un parámetro del request.
  */
 @Controller('realtime')
+// Plan GRATUITO: también disponible (ver @PermitidoEnPlanGratuito).
+@PermitidoEnPlanGratuito()
 @UseGuards(JwtAuthGuard)
 export class RealtimeTokenController {
   constructor(private readonly tokenService: RealtimeTokenService) {}

@@ -179,8 +179,10 @@ export class AuthService {
     }
 
     if (usuario.iglesia?.estado === EstadoIglesia.SUSPENDIDA) {
-      const { diasEnMora } = calcularEstadoFacturacion(usuario.iglesia.proximaFacturacion);
-      throw new IglesiaSuspendidaException(diasEnMora);
+      const { proximaFacturacion } = usuario.iglesia;
+      throw new IglesiaSuspendidaException(
+        proximaFacturacion ? calcularEstadoFacturacion(proximaFacturacion).diasEnMora : 0,
+      );
     }
 
     const { iglesia, ...usuarioSinIglesia } = usuario;

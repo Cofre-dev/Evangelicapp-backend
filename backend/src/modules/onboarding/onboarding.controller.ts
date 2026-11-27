@@ -1,3 +1,4 @@
+import { PermitidoEnPlanGratuito } from '../../common/decorators/permitido-en-plan-gratuito.decorator';
 import { Body, Controller, ForbiddenException, Patch, UseGuards } from '@nestjs/common';
 import { Rol } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -13,6 +14,8 @@ import { OnboardingService } from './onboarding.service';
  * recibe las credenciales temporales al crear la iglesia (ver SuperAdminModule).
  */
 @Controller('onboarding')
+// Plan GRATUITO: también disponible (ver @PermitidoEnPlanGratuito).
+@PermitidoEnPlanGratuito()
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class OnboardingController {
   constructor(private readonly onboardingService: OnboardingService) {}

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { EstadoIglesia } from '@prisma/client';
+import { EstadoIglesia, PlanIglesia } from '@prisma/client';
 import { runAsService } from '../../../common/context/tenant-context';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { activadoAntesDelMesActual, ReporteCongregacionService } from './reporte-congregacion.service';
@@ -45,6 +45,9 @@ export class ReporteCongregacionCron {
     const iglesias = await this.prisma.iglesia.findMany({
       where: {
         estado: EstadoIglesia.ACTIVA,
+        // El reporte es parte de Finanzas (módulo de pago): una iglesia en plan GRATUITO
+        // (p. ej. degradada por mora) no lo envía aunque tenga el interruptor encendido.
+        plan: { not: PlanIglesia.GRATUITO },
         reporteFinancieroActivo: true,
         enviosReporteFinanciero: { none: { periodo } },
       },

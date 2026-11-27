@@ -18,6 +18,7 @@ import { MiIglesiaModule } from './modules/mi-iglesia/mi-iglesia.module';
 import { NotasModule } from './modules/notas/notas.module';
 import { OnboardingModule } from './modules/onboarding/onboarding.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
+import { RedModule } from './modules/red/red.module';
 import { SuperAdminModule } from './modules/super-admin/super-admin.module';
 import { UsuariosModule } from './modules/usuarios/usuarios.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -48,6 +49,7 @@ import { SupabaseModule } from './supabase/supabase.module';
     NotasModule,
     IntegrantesModule,
     CeremoniasModule,
+    RedModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
@@ -84,6 +86,10 @@ export class AppModule implements NestModule {
         // el token de baja es la autenticación (ver ReporteCongregacionSuscripcionController).
         { path: 'reporte-financiero/suscripcion/:token/baja', method: RequestMethod.POST },
         { path: 'reporte-financiero/suscripcion/:token/reactivar', method: RequestMethod.POST },
+        // Registro autoservicio de iglesias (Red de iglesias, plan GRATUITO): todavía no hay
+        // cuenta; la confirmación se autentica con el token del correo.
+        { path: 'red/registro', method: RequestMethod.POST },
+        { path: 'red/registro/confirmar/:token', method: RequestMethod.POST },
         // Refresh: es el endpoint que le da al frontend un csrfToken nuevo cuando perdió
         // el que tenía en memoria (ej. tras un F5) — exigirle CSRF para conseguir el
         // primer csrfToken es un candado que pide su propia llave. A diferencia de

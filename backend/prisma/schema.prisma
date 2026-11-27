@@ -25,6 +25,13 @@ enum ModuloSistema {
   INTEGRANTES
 }
 
+/// Cómo nació la iglesia en la plataforma: dada de alta por el SuperAdmin (siempre con
+/// plan de pago) o registrada por su cuenta desde la página pública (plan GRATUITO).
+enum OrigenIglesia {
+  SUPER_ADMIN
+  AUTOSERVICIO
+}
+
 enum EstadoIglesia {
   ACTIVA
   /// Oculta por mora (3+ días sin pagar la mensualidad, ver IglesiasService#ocultar):
@@ -37,7 +44,13 @@ enum EstadoIglesia {
 /// Plan comercial contratado por la iglesia. Define topes de uso (ver PLAN_LIMITS en
 /// common/constants/plan.ts) — cantidad máxima de usuarios y de subdepartamentos
 /// financieros. Estrategia comercial: siempre empujar al plan más caro (PRO).
+///
+/// GRATUITO (2026-11-26): solo la Red de iglesias (directorio, feed, llamados de ayuda,
+/// alianzas, notificaciones de la red). Todo lo demás exige un plan de pago (ver
+/// JwtAuthGuard + @PermitidoEnPlanGratuito). Es el plan de las iglesias que se registran
+/// solas y el plan al que baja una iglesia de pago cuando cae en mora.
 enum PlanIglesia {
+  GRATUITO
   BASICO
   MEDIO
   PRO
@@ -121,12 +134,28 @@ model Iglesia {
   /// ni desactiva datos existentes, solo cambia los topes de uso hacia delante.
   plan PlanIglesia
 
+  /// Plan de pago que tenía la iglesia cuando bajó a GRATUITO por mora (ver
+  /// IglesiasService#degradarPorMora). Al confirmar el pago se restaura este plan
+  /// (IglesiasService#marcarPagada). Null si no está degradada por mora.
+  planPrevioMora PlanIglesia?
+
+  origen OrigenIglesia @default(SUPER_ADMIN)
+
+  /// Verificada por el SuperAdmin: insignia en la Red de iglesias. Las iglesias de pago
+  /// nacen verificadas (pasaron por un contacto comercial); las autoservicio, no.
+  verificada   Boolean   @default(false)
+  verificadaEn DateTime?
+
   /// Próxima fecha en que corresponde pagar la mensualidad. Fijada por el SuperAdmin
   /// al crear la iglesia; se recalcula (+1 mes desde esta misma fecha, no desde "hoy",
   /// para no perder el día del mes acordado) cada vez que se confirma un pago manual
   /// (ver IglesiasService#marcarPagada). No hay pasarela de pago todavía — el estado
   /// de pago se confirma a mano por ahora.
-  proximaFacturacion DateTime
+  ///
+  /// Null en las iglesias GRATUITO que nunca pagaron (registro autoservicio): no tienen
+  /// facturación. Mientras el plan es GRATUITO este campo se ignora (ver
+  /// estadoFacturacionDe en calcular-facturacion.ts).
+  proximaFacturacion DateTime?
 
   /// Último pago confirmado manualmente por el SuperAdmin. Null si nunca se ha
   /// marcado un pago (ej. la primera facturación, todavía pendiente).
@@ -162,6 +191,13 @@ model Iglesia {
   pagos                    PagoIglesia[]
   sesionesActividad        SesionActividad[]
   enviosReporteFinanciero  EnvioReporteFinanciero[]
+  perfilRed                PerfilRed?
+  llamadosAyuda            LlamadoAyuda[]
+  compromisosApoyo         CompromisoApoyo[]
+  alianzasEnviadas         Alianza[]                @relation("AlianzaSolicitante")
+  alianzasRecibidas        Alianza[]                @relation("AlianzaReceptora")
+  notificaciones           Notificacion[]
+  reportesRed              ReporteRed[]
 
   @@map("iglesias")
 }
@@ -228,6 +264,11 @@ model Usuario {
   /// contra SesionActividad. Null hasta el primer login tras este cambio.
   ultimoAccesoAt DateTime?
 
+  /// Preferencia del usuario: recibir por correo los avisos de la Red de iglesias
+  /// (llamados nuevos en su zona, apoyos a sus llamados, solicitudes de alianza). Las
+  /// notificaciones dentro del sistema llegan siempre.
+  notificacionesRedEmail Boolean @default(true)
+
   /// Fase 7 de docs/supabase.md (convivencia temporal, sin cortar el login propio):
   /// espejo de este usuario en `auth.users` del proyecto de PRUEBA de Supabase Auth
   /// (`Backend-auth-test`, no el proyecto real). Null hasta el primer login exitoso
@@ -257,6 +298,10 @@ model Usuario {
   sesionesActividad     SesionActividad[]
   reportesActivados     Iglesia[]                @relation("ReporteFinancieroActivadoPor")
   reportesEnviados      EnvioReporteFinanciero[] @relation("EnvioReporteEnviadoPor")
+  llamadosCreados       LlamadoAyuda[]           @relation("LlamadoCreadoPor")
+  compromisosCreados    CompromisoApoyo[]        @relation("CompromisoCreadoPor")
+  alianzasCreadas       Alianza[]                @relation("AlianzaCreadaPor")
+  notificaciones        Notificacion[]
 
   @@index([iglesiaId])
   @@index([iglesiaId, ultimoAccesoAt])
@@ -759,4 +804,275 @@ model Presentacion {
   @@unique([iglesiaId, folio])
   @@index([iglesiaId, fecha])
   @@map("presentaciones")
+}
+
+// ==========================================================================
+// MÓDULO 6 — RED DE IGLESIAS (disponible desde el plan GRATUITO)
+//
+// Primera funcionalidad que cruza datos ENTRE iglesias. Regla: ninguna policy RLS
+// existente se relaja; todo lo compartido vive en estas tablas, cada una con su propia
+// policy (ver migración 20261127120000_red_de_iglesias). Nada de acá expone datos
+// internos de una iglesia (finanzas, integrantes, agenda): solo lo que la propia
+// iglesia publica en la red.
+// ==========================================================================
+
+/// Cara pública de una iglesia en la red (directorio). Copia a propósito nombre /
+/// comuna / región / logo / verificada desde `Iglesia` (ver RedPerfilService#sincronizar):
+/// las otras iglesias nunca leen la tabla `iglesias`, que sigue aislada por RLS.
+model PerfilRed {
+  id String @id @default(cuid())
+
+  nombre     String
+  comuna     String
+  region     String
+  logoUrl    String?
+  verificada Boolean @default(false)
+
+  descripcion      String?
+  emailContacto    String?
+  telefonoContacto String?
+  sitioWeb         String?
+  /// false = no aparece en el directorio (igual puede usar el feed y publicar llamados).
+  visible          Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  iglesiaId String  @unique
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  @@index([region, comuna])
+  @@map("perfiles_red")
+}
+
+enum TipoLlamado {
+  OPERATIVO_SOCIAL
+  VOLUNTARIADO
+  RECOLECCION
+  EVENTO_CONJUNTO
+  OTRO
+}
+
+/// A quién le aparece un llamado en el feed (y a quién se le notifica).
+enum VisibilidadLlamado {
+  COMUNA
+  REGION
+  NACIONAL
+  ALIADAS
+}
+
+enum EstadoLlamado {
+  ABIERTO
+  /// Todas las necesidades con meta numérica llegaron a su meta (automático) o la
+  /// iglesia lo marcó cubierto. Sigue visible y se puede seguir apoyando.
+  CUBIERTO
+  /// Terminado: sigue visible pero ya no recibe apoyos.
+  CERRADO
+}
+
+/// Sin dinero a propósito: las donaciones en plata quedaron fuera de esta etapa
+/// (decisión del fundador, 2026-11-26).
+enum TipoNecesidad {
+  VOLUNTARIOS
+  INSUMOS
+  SERVICIO
+  OTRO
+}
+
+enum EstadoCompromiso {
+  ACTIVO
+  CANCELADO
+}
+
+enum EstadoAlianza {
+  PENDIENTE
+  ACEPTADA
+  RECHAZADA
+}
+
+enum TipoNotificacion {
+  LLAMADO_NUEVO
+  COMPROMISO_NUEVO
+  COMPROMISO_CANCELADO
+  LLAMADO_CUBIERTO
+  ALIANZA_SOLICITADA
+  ALIANZA_ACEPTADA
+  IGLESIA_VERIFICADA
+  PLAN_DEGRADADO
+}
+
+/// "Llamado de ayuda": una acción social u operativo para el que la iglesia necesita
+/// apoyo de otras (voluntarios, insumos, servicios). Es la unidad central de la red —
+/// no hay posts libres, likes ni comentarios.
+model LlamadoAyuda {
+  id          String             @id @default(cuid())
+  titulo      String
+  descripcion String
+  tipo        TipoLlamado
+  visibilidad VisibilidadLlamado
+  estado      EstadoLlamado      @default(ABIERTO)
+
+  /// Dónde ocurre (por defecto, la comuna de la iglesia). El feed y las notificaciones
+  /// hacen el match por comuna/región con estos campos.
+  comuna      String
+  region      String
+  direccion   String?
+  fechaInicio DateTime?
+  fechaFin    DateTime?
+
+  /// Ocultado por el SuperAdmin tras un reporte: deja de verse para las demás iglesias
+  /// (la dueña lo sigue viendo, marcado como oculto).
+  ocultoModeracion Boolean   @default(false)
+  cerradoEn        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  iglesiaId String
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  creadoPorId String?
+  creadoPor   Usuario? @relation("LlamadoCreadoPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
+
+  necesidades NecesidadLlamado[]
+  compromisos CompromisoApoyo[]
+  reportes    ReporteRed[]
+
+  @@index([estado, region, comuna])
+  @@index([iglesiaId, createdAt])
+  @@map("llamados_ayuda")
+}
+
+/// Una meta concreta de un llamado: "20 voluntarios", "100 kg de alimentos".
+/// `cantidadMeta` null = necesidad sin meta numérica (ej. "un electricista").
+model NecesidadLlamado {
+  id           String        @id @default(cuid())
+  descripcion  String
+  tipo         TipoNecesidad
+  cantidadMeta Int?
+  unidad       String?
+  orden        Int           @default(0)
+  createdAt    DateTime      @default(now())
+
+  llamadoId String
+  llamado   LlamadoAyuda @relation(fields: [llamadoId], references: [id], onDelete: Cascade)
+
+  compromisos CompromisoApoyo[]
+
+  @@index([llamadoId])
+  @@map("necesidades_llamado")
+}
+
+/// El "¡Yo te ayudo!": una iglesia se compromete con una necesidad (o con el llamado en
+/// general si `necesidadId` es null). Visible para toda iglesia que pueda ver el
+/// llamado — ver quién apoya es parte del sentido de la red.
+model CompromisoApoyo {
+  id       String           @id @default(cuid())
+  cantidad Int?
+  mensaje  String?
+  estado   EstadoCompromiso @default(ACTIVO)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  llamadoId String
+  llamado   LlamadoAyuda @relation(fields: [llamadoId], references: [id], onDelete: Cascade)
+
+  necesidadId String?
+  necesidad   NecesidadLlamado? @relation(fields: [necesidadId], references: [id], onDelete: Cascade)
+
+  /// La iglesia que ayuda (nunca la dueña del llamado).
+  iglesiaId String
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  creadoPorId String?
+  creadoPor   Usuario? @relation("CompromisoCreadoPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
+
+  @@index([llamadoId])
+  @@index([iglesiaId])
+  @@map("compromisos_apoyo")
+}
+
+/// Alianza entre dos iglesias (la "amistad" de la red). Un solo registro por par: si B
+/// le pide alianza a A habiendo una de A hacia B, se reutiliza esa fila (ver
+/// RedAlianzasService#solicitar).
+model Alianza {
+  id           String        @id @default(cuid())
+  estado       EstadoAlianza @default(PENDIENTE)
+  mensaje      String?
+  respondidaEn DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  solicitanteId String
+  solicitante   Iglesia @relation("AlianzaSolicitante", fields: [solicitanteId], references: [id], onDelete: Cascade)
+
+  receptoraId String
+  receptora   Iglesia @relation("AlianzaReceptora", fields: [receptoraId], references: [id], onDelete: Cascade)
+
+  creadoPorId String?
+  creadoPor   Usuario? @relation("AlianzaCreadaPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
+
+  @@unique([solicitanteId, receptoraId])
+  @@index([receptoraId, estado])
+  @@map("alianzas")
+}
+
+/// Notificación dentro del sistema (campana), una fila por usuario destinatario. Hoy la
+/// usa la red; el modelo es genérico para que otros módulos la reusen.
+model Notificacion {
+  id        String           @id @default(cuid())
+  tipo      TipoNotificacion
+  titulo    String
+  mensaje   String
+  /// Ruta del frontend a la que lleva el clic (ej. `/red/llamados/<id>`).
+  url       String?
+  leidaEn   DateTime?
+  createdAt DateTime         @default(now())
+
+  usuarioId String
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  iglesiaId String
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  @@index([usuarioId, leidaEn, createdAt])
+  @@index([iglesiaId])
+  @@map("notificaciones")
+}
+
+/// Reporte de un llamado por contenido inapropiado; lo revisa el SuperAdmin.
+model ReporteRed {
+  id         String    @id @default(cuid())
+  motivo     String
+  revisadoEn DateTime?
+  createdAt  DateTime  @default(now())
+
+  llamadoId String
+  llamado   LlamadoAyuda @relation(fields: [llamadoId], references: [id], onDelete: Cascade)
+
+  /// Iglesia que reporta.
+  iglesiaId String
+  iglesia   Iglesia @relation(fields: [iglesiaId], references: [id], onDelete: Cascade)
+
+  @@unique([llamadoId, iglesiaId])
+  @@map("reportes_red")
+}
+
+/// Registro autoservicio pendiente de confirmar por correo. La iglesia y su pastor
+/// recién se crean al confirmar (RedRegistroService#confirmar): un registro con un
+/// correo ajeno o abandonado nunca deja un tenant a medio crear. `datos` guarda el
+/// formulario ya validado, con la contraseña ya hasheada (bcrypt), nunca en texto plano.
+model SolicitudRegistroIglesia {
+  id           String    @id @default(cuid())
+  tokenHash    String    @unique
+  email        String
+  datos        Json
+  expiresAt    DateTime
+  confirmadaEn DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([email])
+  @@map("solicitudes_registro_iglesia")
 }

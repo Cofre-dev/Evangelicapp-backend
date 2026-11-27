@@ -1,10 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { Rol } from '@prisma/client';
+import { PlanIglesia, Rol } from '@prisma/client';
 import { runAsService } from '../../common/context/tenant-context';
+import { DIAS_GRACIA_MORA } from '../../common/constants/facturacion';
 import { calcularEstadoFacturacion } from '../../common/utils/calcular-facturacion';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
+import { IglesiasService } from './iglesias.service';
 
 const DIAS_AVISO_PREVENTIVO = 7;
 
@@ -19,14 +21,14 @@ const DIAS_AVISO_PREVENTIVO = 7;
  * Reglas de negocio (definidas por el fundador):
  * - 7 días antes del vencimiento: un correo preventivo.
  * - Ya vencida: un correo cada 2 días (día 1, 3, 5, 7... de mora), no todos los días.
+ * - Desde 2026-11-26: al cumplir DIAS_GRACIA_MORA días de mora, la iglesia baja al plan
+ *   GRATUITO (IglesiasService#degradarPorMora) en vez de quedar bloqueada, con un correo
+ *   al pastor. Recupera su plan cuando el SuperAdmin confirma el pago.
+ * - Las iglesias en plan GRATUITO no reciben nada de esto (no pagan).
  *
- * Ambas condiciones se evalúan como "es exactamente hoy" (`diasParaFacturacion === 7`
- * / `diasEnMora` impar), sin ningún estado persistido de "ya se avisó" — mismo
- * criterio stateless que ya usa `calcularEstadoFacturacion` para el semáforo. Si el
- * cron no llega a correr justo ese día (redeploy, caída puntual), ese envío se
- * pierde sin reintento; dado que es un aviso de cortesía (no bloquea nada por sí
- * solo — el corte real de acceso lo sigue haciendo `IglesiasService#ocultar`), no se
- * justificó agregar una columna de tracking solo para este caso.
+ * Los avisos se evalúan como "es exactamente hoy" (`diasParaFacturacion === 7` /
+ * `diasEnMora` impar), sin estado persistido de "ya se avisó". La degradación usa
+ * `>=` (no `===`): si el cron no corre justo ese día, la degrada al día siguiente.
  */
 @Injectable()
 export class FacturacionRecordatoriosCron {
@@ -35,6 +37,7 @@ export class FacturacionRecordatoriosCron {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
+    private readonly iglesiasService: IglesiasService,
   ) {}
 
   @Cron(CronExpression.EVERY_DAY_AT_9AM)
@@ -47,6 +50,7 @@ export class FacturacionRecordatoriosCron {
 
   private async ejecutarComoServicio(): Promise<void> {
     const iglesias = await this.prisma.iglesia.findMany({
+      where: { plan: { not: PlanIglesia.GRATUITO }, proximaFacturacion: { not: null } },
       select: {
         id: true,
         nombre: true,
@@ -60,15 +64,31 @@ export class FacturacionRecordatoriosCron {
     });
 
     let enviados = 0;
+    let degradadas = 0;
     for (const iglesia of iglesias) {
-      // No debería pasar (toda iglesia se crea con su manager), pero una cuenta
-      // desactivada a mano no debe tumbar la corrida del resto de las iglesias.
+      if (!iglesia.proximaFacturacion) continue;
       const manager = iglesia.usuarios[0];
-      if (!manager) continue;
 
       const { diasParaFacturacion, enMora, diasEnMora } = calcularEstadoFacturacion(
         iglesia.proximaFacturacion,
       );
+
+      if (enMora && diasEnMora >= DIAS_GRACIA_MORA) {
+        if (await this.iglesiasService.degradarPorMora(iglesia.id)) {
+          degradadas++;
+          if (manager) {
+            await this.mailService.enviarPlanDegradado({
+              email: manager.email,
+              nombreIglesia: iglesia.nombre,
+            });
+          }
+        }
+        continue;
+      }
+
+      // No debería pasar (toda iglesia se crea con su manager), pero una cuenta
+      // desactivada a mano no debe tumbar la corrida del resto de las iglesias.
+      if (!manager) continue;
 
       if (diasParaFacturacion === DIAS_AVISO_PREVENTIVO) {
         await this.mailService.enviarRecordatorioFacturacion({
@@ -87,8 +107,10 @@ export class FacturacionRecordatoriosCron {
       }
     }
 
-    if (enviados > 0) {
-      this.logger.log(`Recordatorios de facturación: ${enviados} correo(s) enviado(s).`);
+    if (enviados > 0 || degradadas > 0) {
+      this.logger.log(
+        `Facturación: ${enviados} recordatorio(s) enviado(s), ${degradadas} iglesia(s) pasada(s) a plan gratuito por mora.`,
+      );
     }
   }
 }

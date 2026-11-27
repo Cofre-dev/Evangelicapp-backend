@@ -1,3 +1,4 @@
+import { PermitidoEnPlanGratuito } from '../../common/decorators/permitido-en-plan-gratuito.decorator';
 import {
   BadRequestException,
   Body,
@@ -22,6 +23,8 @@ import { MiIglesiaService } from './mi-iglesia.service';
 
 /** Perfil de la propia iglesia: exclusivo del MANAGER (dueño del tenant). iglesiaId siempre del JWT. */
 @Controller('mi-iglesia')
+// Plan GRATUITO: también disponible (ver @PermitidoEnPlanGratuito).
+@PermitidoEnPlanGratuito()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Rol.MANAGER)
 export class MiIglesiaController {
