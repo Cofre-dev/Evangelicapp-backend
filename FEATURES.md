@@ -2793,3 +2793,16 @@ gratuitos activos.
   maneja ese plan. Se enciende en Render cuando el frontend de la red esté en producción.
 - Probado con el cron real contra la base local: apagado no degrada, encendido degrada. `.env.example` y
   `docs/red-de-iglesias.md` al día.
+
+## [2026-11-27 — viernes] Pase a producción de la Red de iglesias (backend)
+
+- **Migración `20261127120000_red_de_iglesias` aplicada en producción** (`evangelicapp-prod`) por MCP antes de subir el
+  código (el primer intento venció sin aprobación y no aplicó nada; verificado antes de reintentar). Verificado: plan
+  GRATUITO en el enum, 8 tablas con RLS `FORCE` y 12 policies, GRANT a `app_runtime` y nada para `anon`, 7 perfiles de
+  red creados, 7 iglesias verificadas, ningún plan cambiado. `_prisma_migrations` sin reconciliar (igual que antes).
+- **Git:** `testing` → `staging` por fast-forward (`412eb745`). Render desplegó (`dep-dc4elktbedkc73dhglq0`, live).
+- **Smoke test:** rutas nuevas responden (`/red/registro/confirmar/<falso>` → 404, registro con comuna inválida → 400,
+  `/red/*` y `/notificaciones/*` → 401 sin sesión).
+- **Estado en producción:** `MORA_PASA_A_GRATUITO` no está definida en Render → la bajada por mora sigue apagada.
+  `TURNSTILE_SECRET_KEY` tampoco → el registro público funciona sin captcha. El login sigue caído por el proyecto de
+  Supabase Auth pausado (no relacionado con este cambio).
