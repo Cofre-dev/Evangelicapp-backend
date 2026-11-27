@@ -2783,3 +2783,13 @@ con las 22 migraciones, API como `app_runtime` (RLS real) y un emisor de tokens 
 restauración al pagar) y el bloqueo por SUSPENDIDA. Sin probar: correos reales, Turnstile real y Supabase Realtime.
 No se pudo reactivar el proyecto de Supabase Auth (`Backend-auth-test`): la cuenta llegó al límite de 2 proyectos
 gratuitos activos.
+
+## [2026-11-27 — viernes] Interruptor MORA_PASA_A_GRATUITO
+
+- `FacturacionRecordatoriosCron` solo baja a gratuito por mora si `MORA_PASA_A_GRATUITO=true`. Apagado (default) se
+  comporta como antes: solo recordatorios, y el correo de mora vuelve a advertir de la suspensión.
+- **Por qué:** al preparar el pase a producción, 6 de las 7 iglesias de producción tenían 3+ días de mora; con la
+  degradación activa, el cron del día siguiente las habría pasado todas a gratuito con un frontend que todavía no
+  maneja ese plan. Se enciende en Render cuando el frontend de la red esté en producción.
+- Probado con el cron real contra la base local: apagado no degrada, encendido degrada. `.env.example` y
+  `docs/red-de-iglesias.md` al día.

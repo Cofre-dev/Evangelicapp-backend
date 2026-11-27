@@ -30,6 +30,8 @@ interface FacturacionVencidaParams {
   email: string;
   nombreIglesia: string;
   diasEnMora: number;
+  /** Si el interruptor MORA_PASA_A_GRATUITO está encendido (cambia la advertencia del correo). */
+  pasaAGratuito: boolean;
 }
 
 interface ConvocatoriaEventoParams {
@@ -280,7 +282,11 @@ export class MailService {
         html: `
           <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b;">
             <h2 style="color: #dc2626;">${nombreIglesia}</h2>
-            <p>Tu facturación venció hace <strong>${diasTexto}</strong>. Favor ponerte al día lo antes posible: si la mora llega a 3 días, tu iglesia pasa al plan gratuito y pierde los módulos de pago (tus datos no se borran).</p>
+            <p>Tu facturación venció hace <strong>${diasTexto}</strong>. ${
+              params.pasaAGratuito
+                ? 'Favor ponerte al día lo antes posible: si la mora llega a 3 días, tu iglesia pasa al plan gratuito y pierde los módulos de pago (tus datos no se borran).'
+                : 'Favor ponerte al día lo antes posible para evitar la suspensión del acceso de tu equipo a EvangelicApp.'
+            }</p>
             <p style="margin-top: 24px;">
               <a href="${frontendUrl}" style="background:#dc2626;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">
                 Ir a EvangelicApp

@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PlanIglesia, Rol } from '@prisma/client';
 import { runAsService } from '../../common/context/tenant-context';
@@ -26,6 +27,12 @@ const DIAS_AVISO_PREVENTIVO = 7;
  *   al pastor. Recupera su plan cuando el SuperAdmin confirma el pago.
  * - Las iglesias en plan GRATUITO no reciben nada de esto (no pagan).
  *
+ * La degradación está detrás del interruptor `MORA_PASA_A_GRATUITO` (variable de entorno,
+ * apagada salvo que valga "true"): se subió el backend antes de que el frontend supiera
+ * manejar el plan gratuito, y al desplegar 6 de las 7 iglesias de producción tenían más
+ * de 3 días de mora. Con el interruptor apagado el cron se comporta como antes (solo
+ * recordatorios). Encenderlo en Render cuando el frontend de la red esté en producción.
+ *
  * Los avisos se evalúan como "es exactamente hoy" (`diasParaFacturacion === 7` /
  * `diasEnMora` impar), sin estado persistido de "ya se avisó". La degradación usa
  * `>=` (no `===`): si el cron no corre justo ese día, la degrada al día siguiente.
@@ -38,7 +45,12 @@ export class FacturacionRecordatoriosCron {
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
     private readonly iglesiasService: IglesiasService,
+    private readonly config: ConfigService,
   ) {}
+
+  private get moraPasaAGratuito(): boolean {
+    return this.config.get<string>('MORA_PASA_A_GRATUITO') === 'true';
+  }
 
   @Cron(CronExpression.EVERY_DAY_AT_9AM)
   async ejecutar(): Promise<void> {
@@ -73,7 +85,7 @@ export class FacturacionRecordatoriosCron {
         iglesia.proximaFacturacion,
       );
 
-      if (enMora && diasEnMora >= DIAS_GRACIA_MORA) {
+      if (this.moraPasaAGratuito && enMora && diasEnMora >= DIAS_GRACIA_MORA) {
         if (await this.iglesiasService.degradarPorMora(iglesia.id)) {
           degradadas++;
           if (manager) {
@@ -102,6 +114,7 @@ export class FacturacionRecordatoriosCron {
           email: manager.email,
           nombreIglesia: iglesia.nombre,
           diasEnMora,
+          pasaAGratuito: this.moraPasaAGratuito,
         });
         enviados++;
       }

@@ -30,6 +30,11 @@ autor). Instrucciones para el frontend: `prompt.md` en la raíz del repo.
   plan en `planPrevioMora`, pasa a GRATUITO, avisa en la campana y por correo. `marcarPagada`
   restaura `planPrevioMora` y cuenta el nuevo ciclo desde el día del pago. Marcar pagada una
   iglesia GRATUITO sin plan previo da 400 (hay que usar "cambiar plan").
+- **Interruptor `MORA_PASA_A_GRATUITO`** (variable de entorno): la degradación solo corre si vale
+  `"true"`. Apagado al subir a producción (2026-11-27) porque el frontend todavía no maneja el plan
+  gratuito y 6 de las 7 iglesias de producción tenían más de 3 días de mora. Con el interruptor
+  apagado el cron se comporta como antes (solo recordatorios). **Encenderlo en Render cuando el
+  frontend de la red esté en producción.**
 - **Contratar:** `PATCH /iglesias/:id/plan` desde GRATUITO a un plan de pago fija la facturación
   a hoy + 30 días, registra el pago en el historial y verifica la iglesia.
 - El cron del reporte financiero ignora las iglesias GRATUITO.
